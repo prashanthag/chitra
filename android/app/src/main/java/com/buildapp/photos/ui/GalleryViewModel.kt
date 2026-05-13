@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-enum class Filter { ALL, PHOTOS, VIDEOS, FAVORITES }
+enum class Filter { ALL, PHOTOS, VIDEOS, FAVORITES, ARCHIVED, TRASH }
 
 data class GalleryState(
     val items: List<MediaItem> = emptyList(),
@@ -75,8 +75,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                     else -> null
                 }
                 val fav = if (s.filter == Filter.FAVORITES) 1 else null
+                val trashed = if (s.filter == Filter.TRASH) 1 else null
+                val archived = if (s.filter == Filter.ARCHIVED) 1 else null
                 val q = s.query.takeIf { it.isNotBlank() }
-                val resp = api.media(page = nextPage, perPage = 80, kind = kind, favorites = fav, q = q)
+                val resp = api.media(
+                    page = nextPage, perPage = 80,
+                    kind = kind, favorites = fav, q = q,
+                    trashed = trashed, archived = archived,
+                )
                 if (resp.items.size < resp.perPage) endReached = true
                 _state.value = _state.value.copy(
                     items = _state.value.items + resp.items,
@@ -114,6 +120,44 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                     items = _state.value.items.map {
                         if (it.id == item.id) it.copy(favorite = if (r.favorite) 1 else 0) else it
                     }
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun trash(item: MediaItem) {
+        val api = api ?: return
+        viewModelScope.launch {
+            try {
+                api.trash(item.id)
+                _state.value = _state.value.copy(
+                    items = _state.value.items.filterNot { it.id == item.id },
+                    total = _state.value.total - 1,
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun archive(item: MediaItem) {
+        val api = api ?: return
+        viewModelScope.launch {
+            try {
+                api.archive(item.id)
+                _state.value = _state.value.copy(
+                    items = _state.value.items.filterNot { it.id == item.id },
+                    total = _state.value.total - 1,
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun restore(item: MediaItem) {
+        val api = api ?: return
+        viewModelScope.launch {
+            try {
+                api.restore(item.id)
+                _state.value = _state.value.copy(
+                    items = _state.value.items.filterNot { it.id == item.id },
                 )
             } catch (_: Exception) {}
         }

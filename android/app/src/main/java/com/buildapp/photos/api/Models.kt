@@ -16,6 +16,8 @@ data class MediaItem(
     val height: Int? = null,
     val album: String? = null,
     val favorite: Int = 0,
+    @SerialName("trashed_at") val trashedAt: Double? = null,
+    val archived: Int = 0,
 )
 
 @Serializable

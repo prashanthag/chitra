@@ -26,18 +26,30 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -81,6 +93,28 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var route by remember { mutableStateOf<Route>(Route.Gallery) }
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val pickMedia = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                snackbar.showSnackbar("Uploading ${uris.size}…")
+                val res = withContext(Dispatchers.IO) {
+                    com.buildapp.photos.data.Uploader.upload(context, state.serverUrl, uris)
+                }
+                res.fold(
+                    onSuccess = { n ->
+                        snackbar.showSnackbar("Uploaded $n")
+                        vm.refresh()
+                    },
+                    onFailure = { snackbar.showSnackbar("Upload failed: ${it.message}") },
+                )
+            }
+        }
+    }
 
     when (val r = route) {
         is Route.People -> {
@@ -104,6 +138,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     serverUrl = state.serverUrl,
                     onDismiss = { selected = null },
                     onToggleFavorite = { vm.toggleFavorite(it) },
+                    onTrash = { vm.trash(it) },
+                    onArchive = { vm.archive(it) },
+                    onRestore = { vm.restore(it) },
                 )
             }
             return
@@ -129,6 +166,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     serverUrl = state.serverUrl,
                     onDismiss = { selected = null },
                     onToggleFavorite = { vm.toggleFavorite(it) },
+                    onTrash = { vm.trash(it) },
+                    onArchive = { vm.archive(it) },
+                    onRestore = { vm.restore(it) },
                 )
             }
             return
@@ -137,6 +177,18 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = {
+                pickMedia.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        ActivityResultContracts.PickVisualMedia.ImageAndVideo,
+                    ),
+                )
+            }) {
+                Icon(Icons.Default.Add, contentDescription = "Upload")
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -212,6 +264,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             serverUrl = state.serverUrl,
             onDismiss = { selected = null },
             onToggleFavorite = { vm.toggleFavorite(it) },
+            onTrash = { vm.trash(it) },
+            onArchive = { vm.archive(it) },
+            onRestore = { vm.restore(it) },
         )
     }
 

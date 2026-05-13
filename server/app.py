@@ -71,6 +71,14 @@ def db() -> sqlite3.Connection:
     return g.db
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col_def: str) -> None:
+    col_name = col_def.split()[0]
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(r[1] == col_name for r in rows):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
+
+
 def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(
@@ -117,6 +125,9 @@ def init_db() -> None:
         );
         """
     )
+    # Idempotent migrations
+    _add_column_if_missing(conn, "media", "trashed_at REAL")
+    _add_column_if_missing(conn, "media", "archived INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -444,14 +455,23 @@ def list_media():
     year = request.args.get("year")
     month = request.args.get("month")
 
+    trashed_only = request.args.get("trashed") in ("1", "true")
+    archived_only = request.args.get("archived") in ("1", "true")
+
     sql_select = (
         "SELECT m.id,m.name,m.kind,m.ext,m.mime,m.size,m.taken_at,"
-        "m.width,m.height,m.album, "
+        "m.width,m.height,m.album,m.trashed_at,m.archived, "
         "CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite "
         "FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
     )
     where: list[str] = []
     args: list = []
+    if trashed_only:
+        where.append("m.trashed_at IS NOT NULL")
+    elif archived_only:
+        where.append("m.archived = 1 AND m.trashed_at IS NULL")
+    else:
+        where.append("m.trashed_at IS NULL AND m.archived = 0")
     if kind in ("photo", "video"):
         where.append("m.kind = ?")
         args.append(kind)
@@ -540,6 +560,84 @@ def timeline():
            ORDER BY y DESC, m DESC"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/media/<mid>/trash")
+def trash_media(mid: str):
+    db().execute("UPDATE media SET trashed_at = ? WHERE id = ?", (time.time(), mid))
+    db().commit()
+    return jsonify({"ok": True, "trashed": True})
+
+
+@app.post("/api/media/<mid>/restore")
+def restore_media(mid: str):
+    db().execute("UPDATE media SET trashed_at = NULL WHERE id = ?", (mid,))
+    db().commit()
+    return jsonify({"ok": True, "trashed": False})
+
+
+@app.post("/api/media/<mid>/archive")
+def archive_media(mid: str):
+    cur = db().execute("SELECT archived FROM media WHERE id = ?", (mid,)).fetchone()
+    if not cur:
+        abort(404)
+    new = 0 if cur["archived"] else 1
+    db().execute("UPDATE media SET archived = ? WHERE id = ?", (new, mid))
+    db().commit()
+    return jsonify({"ok": True, "archived": bool(new)})
+
+
+@app.post("/api/upload")
+def upload_media():
+    """Multipart upload from clients. Saves to MEDIA_ROOT/uploads/YYYY-MM-DD/
+    and immediately indexes the new files."""
+    upload_dir = MEDIA_ROOT / "uploads" / time.strftime("%Y-%m-%d")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in request.files.values():
+        if not f.filename:
+            continue
+        # Strip path components from filename
+        safe_name = Path(f.filename).name
+        dest = upload_dir / safe_name
+        # Avoid clobber
+        i = 1
+        while dest.exists():
+            stem, suf = dest.stem, dest.suffix
+            dest = upload_dir / f"{stem}_{i}{suf}"
+            i += 1
+        f.save(dest)
+        # Add to index immediately so it shows up without waiting for rescan
+        ext = dest.suffix.lower()
+        kind = classify(ext)
+        if not kind:
+            saved.append({"name": safe_name, "indexed": False, "reason": "unsupported_ext"})
+            continue
+        st = dest.stat()
+        mid = make_id(dest)
+        mime = mimetypes.guess_type(safe_name)[0]
+        rel = dest.relative_to(MEDIA_ROOT)
+        album = rel.parts[0] if len(rel.parts) > 1 else "_root"
+        taken = extract_taken_at(dest, kind)
+        width = height = None
+        if kind == "photo":
+            try:
+                with Image.open(dest) as im:
+                    width, height = im.size
+            except Exception:
+                pass
+        db().execute(
+            """INSERT OR REPLACE INTO media
+               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                mid, str(dest), safe_name, kind, ext, mime,
+                st.st_size, st.st_mtime, taken, width, height, album,
+            ),
+        )
+        db().commit()
+        saved.append({"id": mid, "name": safe_name, "indexed": True, "kind": kind})
+    return jsonify({"ok": True, "count": len(saved), "items": saved})
 
 
 @app.post("/api/media/<mid>/favorite")

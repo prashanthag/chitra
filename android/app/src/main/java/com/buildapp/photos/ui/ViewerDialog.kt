@@ -8,10 +8,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -39,6 +43,9 @@ fun ViewerDialog(
     serverUrl: String,
     onDismiss: () -> Unit,
     onToggleFavorite: (MediaItem) -> Unit,
+    onTrash: (MediaItem) -> Unit = {},
+    onArchive: (MediaItem) -> Unit = {},
+    onRestore: (MediaItem) -> Unit = {},
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -81,6 +88,22 @@ fun ViewerDialog(
                         contentDescription = "Favorite",
                         tint = if (item.favorite == 1) Color(0xFFE91E63) else Color.White,
                     )
+                }
+                if (item.trashedAt != null) {
+                    IconButton(onClick = { onRestore(item); onDismiss() }) {
+                        Icon(Icons.Default.Restore, contentDescription = "Restore", tint = Color.White)
+                    }
+                } else {
+                    IconButton(onClick = { onArchive(item); onDismiss() }) {
+                        Icon(
+                            if (item.archived == 1) Icons.Default.Unarchive else Icons.Default.Archive,
+                            contentDescription = "Archive",
+                            tint = Color.White,
+                        )
+                    }
+                    IconButton(onClick = { onTrash(item); onDismiss() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Trash", tint = Color.White)
+                    }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)

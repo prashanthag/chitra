@@ -26,6 +26,8 @@ interface PhotoApi {
         @Query("favorites") favorites: Int? = null,
         @Query("year") year: Int? = null,
         @Query("month") month: Int? = null,
+        @Query("trashed") trashed: Int? = null,
+        @Query("archived") archived: Int? = null,
     ): MediaPage
 
     @GET("api/albums")
@@ -54,6 +56,15 @@ interface PhotoApi {
 
     @POST("api/media/{id}/favorite")
     suspend fun toggleFavorite(@Path("id") id: String): FavoriteResp
+
+    @POST("api/media/{id}/trash")
+    suspend fun trash(@Path("id") id: String): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @POST("api/media/{id}/restore")
+    suspend fun restore(@Path("id") id: String): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @POST("api/media/{id}/archive")
+    suspend fun archive(@Path("id") id: String): Map<String, kotlinx.serialization.json.JsonElement>
 
     companion object {
         fun create(baseUrl: String): PhotoApi {
