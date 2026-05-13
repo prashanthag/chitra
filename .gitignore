@@ -10,6 +10,14 @@ venv/
 server/cache/
 server/server.log
 server/server.pid
+server/face_indexer.log
+server/face_indexer.pid
+# Stray venv artifacts that ended up in server/ (real venv is server/.venv/)
+server/bin/
+server/lib/
+server/lib64
+server/pyvenv.cfg
+server/include/
 
 # Android / Gradle
 .gradle/
