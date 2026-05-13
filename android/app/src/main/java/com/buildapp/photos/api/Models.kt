@@ -36,7 +36,25 @@ data class FavoriteResp(
 @Serializable
 data class MemoryGroup(
     val year: String,
+    val title: String? = null,
     val items: List<MediaItem>,
+)
+
+@Serializable
+data class LocationItem(
+    val id: String,
+    val name: String,
+    val kind: String,
+    val lat: Double,
+    val lng: Double,
+    @SerialName("taken_at") val takenAt: Double? = null,
+    val album: String? = null,
+)
+
+@Serializable
+data class ShareResp(
+    val ok: Boolean,
+    val token: String,
 )
 
 @Serializable

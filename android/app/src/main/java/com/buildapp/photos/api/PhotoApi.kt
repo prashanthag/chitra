@@ -78,6 +78,18 @@ interface PhotoApi {
         @Query("degrees") degrees: Int = 90,
     ): Map<String, kotlinx.serialization.json.JsonElement>
 
+    @POST("api/media/{id}/share")
+    suspend fun share(@Path("id") id: String): ShareResp
+
+    @retrofit2.http.HTTP(method = "POST", path = "api/media/{id}/edit", hasBody = true)
+    suspend fun edit(
+        @Path("id") id: String,
+        @retrofit2.http.Body params: Map<String, kotlinx.serialization.json.JsonElement>,
+    ): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @GET("api/locations")
+    suspend fun locations(): List<LocationItem>
+
     companion object {
         fun create(baseUrl: String): PhotoApi {
             val json = Json {
@@ -118,4 +130,7 @@ object Urls {
 
     fun clusterThumb(baseUrl: String, id: Int): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/clusters/$id/thumb"
+
+    fun shareLink(baseUrl: String, token: String): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "s/$token"
 }

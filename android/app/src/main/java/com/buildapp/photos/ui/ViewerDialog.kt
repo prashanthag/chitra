@@ -2,6 +2,8 @@ package com.buildapp.photos.ui
 
 import android.content.Intent
 import android.view.ViewGroup
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
@@ -48,6 +51,7 @@ fun ViewerDialog(
     onArchive: (MediaItem) -> Unit = {},
     onRestore: (MediaItem) -> Unit = {},
     onRotate: (MediaItem) -> Unit = {},
+    onEdit: (MediaItem) -> Unit = {},
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -69,18 +73,30 @@ fun ViewerDialog(
             Row(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
             ) {
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
                 IconButton(onClick = {
-                    val url = if (item.kind == "video") Urls.stream(serverUrl, item.id)
-                    else Urls.full(serverUrl, item.id,
-                        asJpeg = item.ext.equals(".heic", true) || item.ext.equals(".heif", true))
-                    val send = Intent(Intent.ACTION_SEND).apply {
-                        type = if (item.kind == "video") "video/mp4" else "image/jpeg"
-                        putExtra(Intent.EXTRA_TEXT, url)
-                        putExtra(Intent.EXTRA_SUBJECT, item.name)
+                    // Generate a public share token and share that URL (works
+                    // from anyone on the LAN/internet, no auth needed).
+                    scope.launch {
+                        val link = try {
+                            val r = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.buildapp.photos.api.PhotoApi.create(serverUrl).share(item.id)
+                            }
+                            com.buildapp.photos.api.Urls.shareLink(serverUrl, r.token)
+                        } catch (_: Exception) {
+                            if (item.kind == "video") Urls.stream(serverUrl, item.id)
+                            else Urls.full(serverUrl, item.id,
+                                asJpeg = item.ext.equals(".heic", true) || item.ext.equals(".heif", true))
+                        }
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, link)
+                            putExtra(Intent.EXTRA_SUBJECT, item.name)
+                        }
+                        context.startActivity(Intent.createChooser(send, "Share via").apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
                     }
-                    context.startActivity(Intent.createChooser(send, "Share via").apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    })
                 }) {
                     Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White)
                 }
@@ -97,6 +113,9 @@ fun ViewerDialog(
                     }
                 } else {
                     if (item.kind == "photo") {
+                        IconButton(onClick = { onEdit(item) }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.White)
+                        }
                         IconButton(onClick = { onRotate(item) }) {
                             Icon(Icons.Default.RotateRight, contentDescription = "Rotate", tint = Color.White)
                         }
