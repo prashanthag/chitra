@@ -34,6 +34,9 @@ interface PhotoApi {
     @GET("api/timeline")
     suspend fun timeline(): List<TimelineBucket>
 
+    @GET("api/memories")
+    suspend fun memories(): Memories
+
     @GET("api/clusters")
     suspend fun clusters(): List<Cluster>
 

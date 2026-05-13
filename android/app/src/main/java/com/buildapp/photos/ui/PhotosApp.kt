@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -176,6 +177,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 )
             }
             FilterRow(current = state.filter, onSelect = { vm.setFilter(it) })
+            state.memories?.takeIf { it.groups.isNotEmpty() }?.let { mem ->
+                MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { selected = it })
+            }
             Box(Modifier.fillMaxSize()) {
                 when {
                     state.error != null && state.items.isEmpty() -> ErrorView(
@@ -292,6 +296,77 @@ private fun Gallery(
     ) {
         itemsIndexed(items, key = { _, m -> m.id }) { _, m ->
             Tile(item = m, serverUrl = serverUrl, onClick = { onItemClick(m) })
+        }
+    }
+}
+
+@Composable
+private fun MemoriesRow(
+    memories: com.buildapp.photos.api.Memories,
+    serverUrl: String,
+    onClick: (MediaItem) -> Unit,
+) {
+    val nowYear = remember {
+        try { java.time.Year.now().value } catch (_: Throwable) { 2026 }
+    }
+    androidx.compose.foundation.lazy.LazyRow(
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
+            Column(
+                modifier = Modifier.padding(end = 4.dp),
+                horizontalAlignment = Alignment.Start,
+            ) {
+                Text(
+                    "Memories",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    memories.monthDay,
+                    color = Color.Gray,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+        for (group in memories.groups) {
+            val years = nowYear - (group.year.toIntOrNull() ?: nowYear)
+            val item0 = group.items.firstOrNull()
+            if (item0 != null) {
+                item(key = "mem-${group.year}") {
+                    Box(
+                        Modifier
+                            .size(width = 84.dp, height = 110.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                            .background(Color(0xFF1A1A1C))
+                            .clickable { onClick(item0) },
+                    ) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(Urls.thumb(serverUrl, item0.id))
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth()
+                                .background(Color(0xAA000000))
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                        ) {
+                            Text(
+                                if (years > 0) "$years yr ago" else group.year,
+                                color = Color.White,
+                                fontSize = 10.sp,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

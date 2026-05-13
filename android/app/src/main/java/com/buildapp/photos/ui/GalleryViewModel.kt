@@ -24,6 +24,7 @@ data class GalleryState(
     val itemsIndexed: Int = 0,
     val filter: Filter = Filter.ALL,
     val query: String = "",
+    val memories: com.buildapp.photos.api.Memories? = null,
 )
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
@@ -50,6 +51,12 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val h = api?.health() ?: return@launch
                 _state.value = _state.value.copy(itemsIndexed = h.itemsIndexed)
+            } catch (_: Exception) {}
+        }
+        viewModelScope.launch {
+            try {
+                val mem = api?.memories()
+                _state.value = _state.value.copy(memories = mem)
             } catch (_: Exception) {}
         }
     }

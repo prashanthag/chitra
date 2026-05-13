@@ -32,6 +32,18 @@ data class FavoriteResp(
 )
 
 @Serializable
+data class MemoryGroup(
+    val year: String,
+    val items: List<MediaItem>,
+)
+
+@Serializable
+data class Memories(
+    @SerialName("month_day") val monthDay: String,
+    val groups: List<MemoryGroup>,
+)
+
+@Serializable
 data class MediaPage(
     val page: Int,
     @SerialName("per_page") val perPage: Int,

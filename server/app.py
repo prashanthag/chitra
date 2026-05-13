@@ -503,6 +503,31 @@ def list_media():
     )
 
 
+@app.get("/api/memories")
+def memories():
+    """Media from the same month+day as today, across all past years.
+    Google-Photos-style 'On this day' / 'Memories'."""
+    days_window = max(0, int(request.args.get("days", 0)))
+    now = time.localtime()
+    target_md = (now.tm_mon, now.tm_mday)
+    rows = db().execute(
+        """SELECT id, name, kind, ext, mime, taken_at, album,
+                  strftime('%Y', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS year,
+                  strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS md
+           FROM media
+           WHERE strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) = ?
+           ORDER BY taken_at DESC""",
+        (f"{target_md[0]:02d}-{target_md[1]:02d}",),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    # Group by year for the UI
+    by_year: dict[str, list] = {}
+    for r in result:
+        by_year.setdefault(r["year"], []).append(r)
+    grouped = [{"year": y, "items": its} for y, its in sorted(by_year.items(), reverse=True)]
+    return jsonify({"month_day": f"{target_md[0]:02d}-{target_md[1]:02d}", "groups": grouped})
+
+
 @app.get("/api/timeline")
 def timeline():
     """Return counts grouped by year, then month — for Google-Photos-style scrubber."""
