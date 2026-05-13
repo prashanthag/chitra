@@ -128,6 +128,12 @@ def init_db() -> None:
     # Idempotent migrations
     _add_column_if_missing(conn, "media", "trashed_at REAL")
     _add_column_if_missing(conn, "media", "archived INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "media", "lat REAL")
+    _add_column_if_missing(conn, "media", "lng REAL")
+    _add_column_if_missing(conn, "media", "share_token TEXT")
+    _add_column_if_missing(conn, "media", "edit_version INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_latlng ON media(lat, lng)")
     conn.commit()
     conn.close()
 
@@ -148,23 +154,54 @@ def classify(ext: str) -> str | None:
     return None
 
 
-def extract_taken_at(path: Path, kind: str) -> float | None:
-    """Best-effort timestamp. Reads EXIF for photos; falls back to mtime."""
+def _dms_to_dd(dms, ref) -> float | None:
+    """Convert EXIF GPS DMS (degrees, minutes, seconds) tuple to decimal degrees."""
+    try:
+        d = float(dms[0])
+        m = float(dms[1])
+        s = float(dms[2])
+        dd = d + m / 60.0 + s / 3600.0
+        if ref in ("S", "W"):
+            dd = -dd
+        return dd
+    except Exception:
+        return None
+
+
+def extract_exif(path: Path, kind: str) -> dict:
+    """Returns {taken_at, lat, lng}, all optional."""
+    out: dict = {}
     if kind == "photo":
         try:
             with Image.open(path) as im:
                 exif = im.getexif()
-                # 36867 = DateTimeOriginal
                 dt = exif.get(36867) or exif.get(306)
                 if dt:
-                    # "YYYY:MM:DD HH:MM:SS"
-                    return time.mktime(time.strptime(dt, "%Y:%m:%d %H:%M:%S"))
+                    try:
+                        out["taken_at"] = time.mktime(time.strptime(dt, "%Y:%m:%d %H:%M:%S"))
+                    except Exception:
+                        pass
+                gps_ifd = exif.get_ifd(34853) if hasattr(exif, "get_ifd") else None
+                if gps_ifd:
+                    # tag IDs: 1=LatRef, 2=Lat, 3=LngRef, 4=Lng
+                    lat = _dms_to_dd(gps_ifd.get(2), gps_ifd.get(1))
+                    lng = _dms_to_dd(gps_ifd.get(4), gps_ifd.get(3))
+                    if lat is not None and lng is not None:
+                        out["lat"] = lat
+                        out["lng"] = lng
         except Exception:
             pass
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return None
+    if "taken_at" not in out:
+        try:
+            out["taken_at"] = path.stat().st_mtime
+        except OSError:
+            pass
+    return out
+
+
+def extract_taken_at(path: Path, kind: str) -> float | None:
+    """Back-compat shim for callers that just want the timestamp."""
+    return extract_exif(path, kind).get("taken_at")
 
 
 _scan_lock = threading.Lock()
@@ -203,8 +240,8 @@ def scan_once() -> None:
             return
         cur.executemany(
             """INSERT OR REPLACE INTO media
-               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             batch,
         )
         conn.commit()
@@ -235,7 +272,10 @@ def scan_once() -> None:
             mime = mimetypes.guess_type(fname)[0]
             rel = full.relative_to(MEDIA_ROOT)
             album = rel.parts[0] if len(rel.parts) > 1 else "_root"
-            taken = extract_taken_at(full, kind)
+            exif = extract_exif(full, kind)
+            taken = exif.get("taken_at")
+            lat = exif.get("lat")
+            lng = exif.get("lng")
             width = height = None
             if kind == "photo":
                 try:
@@ -257,6 +297,8 @@ def scan_once() -> None:
                     width,
                     height,
                     album,
+                    lat,
+                    lng,
                 )
             )
             _scan_state["scanned"] += 1
@@ -290,6 +332,53 @@ def scan_once() -> None:
 
 def start_background_scan() -> None:
     t = threading.Thread(target=scan_once, daemon=True, name="scan")
+    t.start()
+
+
+def auto_purge_trash(age_days: int = 60) -> None:
+    """Permanently delete media items trashed more than `age_days` ago.
+    Removes the file on disk, the index row, the thumbnail, and any cluster
+    membership rows."""
+    cutoff = time.time() - age_days * 86400
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT id, path FROM media WHERE trashed_at IS NOT NULL AND trashed_at < ?",
+        (cutoff,),
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return
+    print(f"[purge] {len(rows)} items past {age_days}-day retention")
+    for r in rows:
+        try:
+            p = Path(r["path"])
+            if p.exists():
+                p.unlink()
+        except Exception as e:
+            print(f"[purge] file delete failed {r['path']}: {e}")
+        # Thumb
+        t = THUMB_DIR / f"{r['id']}.jpg"
+        if t.exists():
+            try:
+                t.unlink()
+            except Exception:
+                pass
+        conn.execute("DELETE FROM media WHERE id = ?", (r["id"],))
+    conn.commit()
+    conn.close()
+
+
+def start_purge_loop(interval_hours: int = 24) -> None:
+    def loop():
+        while True:
+            try:
+                auto_purge_trash()
+            except Exception as e:
+                print(f"[purge] loop error: {e}")
+            time.sleep(interval_hours * 3600)
+
+    t = threading.Thread(target=loop, daemon=True, name="purge")
     t.start()
 
 
@@ -523,10 +612,47 @@ def list_media():
     )
 
 
+MEMORY_LABELS = [
+    "beach trip", "family gathering", "birthday party", "wedding",
+    "hiking outdoors", "food and dining", "city travel", "sunset",
+    "concert or event", "kids playing", "pets", "celebration",
+    "graduation", "holiday lights", "snow day", "everyday moments",
+]
+
+
+def _memory_title_for(item_ids: list[str]) -> str | None:
+    """Zero-shot label a group of memory items using their CLIP embeddings."""
+    if not item_ids:
+        return None
+    if _clip_state["embs"] is None:
+        if not _load_clip_index():
+            return None
+    try:
+        import numpy as np
+        import torch
+    except Exception:
+        return None
+    id_to_idx = {mid: i for i, mid in enumerate(_clip_state["ids"])}
+    idxs = [id_to_idx[i] for i in item_ids if i in id_to_idx]
+    if not idxs:
+        return None
+    img_mean = _clip_state["embs"][idxs].mean(axis=0)
+    img_mean = img_mean / (np.linalg.norm(img_mean) + 1e-8)
+    with torch.no_grad():
+        tok = _clip_state["tok"]([f"a photo of {x}" for x in MEMORY_LABELS]).to(_clip_state["device"])
+        tf = _clip_state["model"].encode_text(tok)
+        tf = tf / tf.norm(dim=-1, keepdim=True)
+        tf_np = tf.cpu().to(torch.float32).numpy()
+    sims = tf_np @ img_mean
+    best = int(sims.argmax())
+    return MEMORY_LABELS[best].title()
+
+
 @app.get("/api/memories")
 def memories():
     """Media from the same month+day as today, across all past years.
-    Google-Photos-style 'On this day' / 'Memories'."""
+    Google-Photos-style 'On this day' / 'Memories'. Group titles are auto-
+    generated via CLIP zero-shot classification when embeddings are available."""
     days_window = max(0, int(request.args.get("days", 0)))
     now = time.localtime()
     target_md = (now.tm_mon, now.tm_mday)
@@ -536,15 +662,18 @@ def memories():
                   strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS md
            FROM media
            WHERE strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) = ?
+             AND trashed_at IS NULL
            ORDER BY taken_at DESC""",
         (f"{target_md[0]:02d}-{target_md[1]:02d}",),
     ).fetchall()
     result = [dict(r) for r in rows]
-    # Group by year for the UI
     by_year: dict[str, list] = {}
     for r in result:
         by_year.setdefault(r["year"], []).append(r)
-    grouped = [{"year": y, "items": its} for y, its in sorted(by_year.items(), reverse=True)]
+    grouped = []
+    for y, its in sorted(by_year.items(), reverse=True):
+        title = _memory_title_for([i["id"] for i in its]) or "Memories"
+        grouped.append({"year": y, "title": title, "items": its})
     return jsonify({"month_day": f"{target_md[0]:02d}-{target_md[1]:02d}", "groups": grouped})
 
 
@@ -709,6 +838,201 @@ def upload_media():
         db().commit()
         saved.append({"id": mid, "name": safe_name, "indexed": True, "kind": kind})
     return jsonify({"ok": True, "count": len(saved), "items": saved})
+
+
+# ---------- Locations / Map ----------
+
+
+@app.get("/api/locations")
+def list_locations():
+    """All media that have GPS, with id+thumb-friendly fields. Used by map view."""
+    rows = db().execute(
+        """SELECT id, name, kind, lat, lng, taken_at, album
+           FROM media
+           WHERE lat IS NOT NULL AND lng IS NOT NULL
+             AND trashed_at IS NULL"""
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/media_near")
+def media_near():
+    """Photos within `radius_km` of (lat, lng)."""
+    lat = float(request.args.get("lat"))
+    lng = float(request.args.get("lng"))
+    radius_km = float(request.args.get("radius_km", 1.0))
+    # Bounding box quick-filter, then Haversine inside Python for accuracy.
+    deg = radius_km / 111.0  # ~111 km / degree
+    rows = db().execute(
+        """SELECT id,name,kind,ext,mime,size,taken_at,width,height,album,lat,lng
+           FROM media
+           WHERE trashed_at IS NULL
+             AND lat BETWEEN ? AND ?
+             AND lng BETWEEN ? AND ?""",
+        (lat - deg, lat + deg, lng - deg, lng + deg),
+    ).fetchall()
+    import math
+
+    def hav(a, b, c, d):
+        r = 6371.0
+        a1, a2 = math.radians(a), math.radians(c)
+        d1 = math.radians(c - a)
+        d2 = math.radians(d - b)
+        h = math.sin(d1 / 2) ** 2 + math.cos(a1) * math.cos(a2) * math.sin(d2 / 2) ** 2
+        return 2 * r * math.asin(math.sqrt(h))
+
+    out = []
+    for r in rows:
+        d = hav(lat, lng, r["lat"], r["lng"])
+        if d <= radius_km:
+            row = dict(r)
+            row["distance_km"] = round(d, 3)
+            out.append(row)
+    out.sort(key=lambda x: x["distance_km"])
+    return jsonify({"items": out, "total": len(out)})
+
+
+# ---------- Share tokens ----------
+
+
+@app.post("/api/media/<mid>/share")
+def create_share(mid: str):
+    """Generate (or return existing) public share token for a media item."""
+    import secrets
+
+    r = db().execute("SELECT share_token FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r:
+        abort(404)
+    token = r["share_token"] or secrets.token_urlsafe(12)
+    if not r["share_token"]:
+        db().execute("UPDATE media SET share_token = ? WHERE id = ?", (token, mid))
+        db().commit()
+    return jsonify({"ok": True, "token": token})
+
+
+@app.delete("/api/media/<mid>/share")
+def revoke_share(mid: str):
+    db().execute("UPDATE media SET share_token = NULL WHERE id = ?", (mid,))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/s/<token>")
+def share_view(token: str):
+    """Public viewer for a shared media item — no auth, by token only."""
+    r = db().execute(
+        "SELECT id, name, kind, ext, mime FROM media WHERE share_token = ?",
+        (token,),
+    ).fetchone()
+    if not r:
+        abort(404)
+    if r["kind"] == "video":
+        body_html = f'<video controls autoplay src="/s/{token}/file"></video>'
+    else:
+        body_html = f'<img src="/s/{token}/file" />'
+    return (
+        f"""<!doctype html><meta charset=utf-8>
+<title>{r['name']}</title>
+<style>body{{margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh}}
+img,video{{max-width:100vw;max-height:100vh;object-fit:contain}}</style>
+{body_html}""",
+        200,
+        {"Content-Type": "text/html"},
+    )
+
+
+@app.get("/s/<token>/file")
+def share_file(token: str):
+    r = db().execute(
+        "SELECT id, path, kind, ext, mime FROM media WHERE share_token = ?",
+        (token,),
+    ).fetchone()
+    if not r:
+        abort(404)
+    p = Path(r["path"])
+    if not p.exists():
+        abort(404)
+    if r["ext"] in (".heic", ".heif"):
+        with Image.open(p) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=90)
+            buf.seek(0)
+            return send_file(buf, mimetype="image/jpeg")
+    if r["kind"] == "video":
+        return serve_with_range(p, r["mime"])
+    return send_file(p, mimetype=r["mime"], conditional=True)
+
+
+# ---------- Editor ----------
+
+
+@app.post("/api/media/<mid>/edit")
+def edit_media(mid: str):
+    """Apply brightness/contrast/saturation/sharpness/auto + optional crop box.
+    Body JSON params:
+      brightness: float 0..2 (1=no change)
+      contrast:   float 0..2
+      saturation: float 0..2
+      sharpness:  float 0..2
+      auto_enhance: bool
+      crop: [x1,y1,x2,y2] (in image pixels) — optional
+    """
+    from PIL import ImageEnhance, ImageOps as PIO
+
+    r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r:
+        abort(404)
+    if r["kind"] != "photo":
+        abort(400, "edit only supports photos")
+    src = Path(r["path"])
+    if not src.exists():
+        abort(404)
+    body = request.json or {}
+    try:
+        with Image.open(src) as im:
+            exif = im.info.get("exif")
+            im = PIO.exif_transpose(im)
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            crop = body.get("crop")
+            if crop and len(crop) == 4:
+                x1, y1, x2, y2 = (int(v) for v in crop)
+                im = im.crop((x1, y1, x2, y2))
+            if body.get("auto_enhance"):
+                im = PIO.autocontrast(im, cutoff=1)
+                im = ImageEnhance.Sharpness(im).enhance(1.2)
+            for key, factor_cls in (
+                ("brightness", ImageEnhance.Brightness),
+                ("contrast", ImageEnhance.Contrast),
+                ("saturation", ImageEnhance.Color),
+                ("sharpness", ImageEnhance.Sharpness),
+            ):
+                v = body.get(key)
+                if v is not None and float(v) != 1.0:
+                    im = factor_cls(im).enhance(float(v))
+            save_kwargs: dict = {}
+            if exif and src.suffix.lower() in (".jpg", ".jpeg"):
+                save_kwargs["exif"] = exif
+            if src.suffix.lower() in (".jpg", ".jpeg"):
+                save_kwargs["quality"] = 92
+                save_kwargs["subsampling"] = 0
+            im.save(src, **save_kwargs)
+            new_w, new_h = im.size
+        # Invalidate cached thumb
+        t = thumb_path_for(mid)
+        if t.exists():
+            t.unlink()
+        # Bump edit_version so clients can bust their cached image
+        db().execute(
+            "UPDATE media SET width = ?, height = ?, mtime = ?, edit_version = edit_version + 1 WHERE id = ?",
+            (new_w, new_h, src.stat().st_mtime, mid),
+        )
+        db().commit()
+        return jsonify({"ok": True, "width": new_w, "height": new_h})
+    except Exception as e:
+        print(f"[edit] failed: {e}")
+        abort(500, str(e))
 
 
 @app.post("/api/media/<mid>/rotate")
@@ -1039,6 +1363,7 @@ def static_file(p):
 def main() -> None:
     init_db()
     start_background_scan()
+    start_purge_loop()
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 8000))
     print(f"[server] listening on http://{host}:{port}")
