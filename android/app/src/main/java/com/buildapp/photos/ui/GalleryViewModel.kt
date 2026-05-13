@@ -24,6 +24,7 @@ data class GalleryState(
     val itemsIndexed: Int = 0,
     val filter: Filter = Filter.ALL,
     val query: String = "",
+    val semantic: Boolean = false,
     val memories: com.buildapp.photos.api.Memories? = null,
 )
 
@@ -78,7 +79,12 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 val trashed = if (s.filter == Filter.TRASH) 1 else null
                 val archived = if (s.filter == Filter.ARCHIVED) 1 else null
                 val q = s.query.takeIf { it.isNotBlank() }
-                val resp = api.media(
+                val resp = if (s.semantic && q != null) {
+                    // Semantic search returns top-k by CLIP similarity (single page).
+                    val r = api.searchSemantic(q = q, topK = 200)
+                    endReached = true
+                    r
+                } else api.media(
                     page = nextPage, perPage = 80,
                     kind = kind, favorites = fav, q = q,
                     trashed = trashed, archived = archived,
@@ -109,6 +115,13 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         endReached = false
         _state.value = _state.value.copy(query = q, items = emptyList(), page = 0, error = null)
         loadNext()
+    }
+
+    fun setSemantic(semantic: Boolean) {
+        if (_state.value.semantic == semantic) return
+        endReached = false
+        _state.value = _state.value.copy(semantic = semantic, items = emptyList(), page = 0, error = null)
+        if (_state.value.query.isNotBlank()) loadNext()
     }
 
     fun toggleFavorite(item: MediaItem) {

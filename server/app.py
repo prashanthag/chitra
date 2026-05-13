@@ -548,6 +548,77 @@ def memories():
     return jsonify({"month_day": f"{target_md[0]:02d}-{target_md[1]:02d}", "groups": grouped})
 
 
+_clip_state: dict = {"model": None, "tok": None, "embs": None, "ids": None}
+
+
+def _load_clip_index():
+    """Lazy-load CLIP model + image embedding matrix on first semantic search."""
+    if _clip_state["embs"] is not None:
+        return True
+    try:
+        import numpy as np
+        import open_clip
+        import torch
+    except Exception:
+        return False
+    cur = db().execute(
+        "SELECT id, clip_embedding FROM media "
+        "WHERE clip_embedding IS NOT NULL AND length(clip_embedding) > 0 "
+        "AND trashed_at IS NULL"
+    )
+    ids, embs = [], []
+    for r in cur.fetchall():
+        ids.append(r["id"])
+        embs.append(np.frombuffer(r["clip_embedding"], dtype=np.float32))
+    if not embs:
+        return False
+    _clip_state["embs"] = np.stack(embs)
+    _clip_state["ids"] = ids
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+    model = model.to(device).eval()
+    _clip_state["model"] = model
+    _clip_state["tok"] = open_clip.get_tokenizer("ViT-B-32")
+    _clip_state["device"] = device
+    return True
+
+
+@app.get("/api/search_semantic")
+def search_semantic():
+    """Free-text image search backed by CLIP. q=<query>&top_k=80"""
+    q = request.args.get("q", "").strip()
+    if not q:
+        abort(400, "q required")
+    top_k = min(200, max(1, int(request.args.get("top_k", 80))))
+    if not _load_clip_index():
+        abort(503, "clip index not built yet; run clip_indexer.py")
+    import numpy as np
+    import torch
+
+    with torch.no_grad():
+        text = _clip_state["tok"]([q]).to(_clip_state["device"])
+        tf = _clip_state["model"].encode_text(text)
+        tf = tf / tf.norm(dim=-1, keepdim=True)
+        tf_np = tf.cpu().to(torch.float32).numpy()[0]
+    sims = _clip_state["embs"] @ tf_np  # (N,)
+    top_idx = np.argpartition(-sims, top_k)[:top_k]
+    top_idx = top_idx[np.argsort(-sims[top_idx])]
+    top_ids = [_clip_state["ids"][i] for i in top_idx]
+    # Hydrate full media rows in order
+    placeholders = ",".join(["?"] * len(top_ids))
+    rows = db().execute(
+        f"SELECT id,name,kind,ext,mime,size,taken_at,width,height,album, "
+        f"CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite, "
+        f"m.trashed_at, m.archived "
+        f"FROM media m LEFT JOIN favorites f ON f.media_id = m.id "
+        f"WHERE m.id IN ({placeholders})",
+        top_ids,
+    ).fetchall()
+    by_id = {r["id"]: dict(r) for r in rows}
+    ordered = [by_id[i] for i in top_ids if i in by_id]
+    return jsonify({"q": q, "total": len(ordered), "items": ordered})
+
+
 @app.get("/api/timeline")
 def timeline():
     """Return counts grouped by year, then month — for Google-Photos-style scrubber."""

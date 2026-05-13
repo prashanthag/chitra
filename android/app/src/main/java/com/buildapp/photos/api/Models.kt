@@ -47,10 +47,11 @@ data class Memories(
 
 @Serializable
 data class MediaPage(
-    val page: Int,
-    @SerialName("per_page") val perPage: Int,
+    val page: Int = 1,
+    @SerialName("per_page") val perPage: Int = 0,
     val total: Int,
     val items: List<MediaItem>,
+    val q: String? = null,
 )
 
 @Serializable

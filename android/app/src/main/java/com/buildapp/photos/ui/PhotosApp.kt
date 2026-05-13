@@ -224,7 +224,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             if (showSearch) {
                 SearchBar(
                     initial = state.query,
+                    semantic = state.semantic,
                     onApply = { vm.setQuery(it) },
+                    onSemanticChange = { vm.setSemantic(it) },
                     onClose = { showSearch = false; vm.setQuery("") },
                 )
             }
@@ -289,23 +291,43 @@ private fun subtitleFor(state: GalleryState): String {
 }
 
 @Composable
-private fun SearchBar(initial: String, onApply: (String) -> Unit, onClose: () -> Unit) {
+private fun SearchBar(
+    initial: String,
+    semantic: Boolean,
+    onApply: (String) -> Unit,
+    onSemanticChange: (Boolean) -> Unit,
+    onClose: () -> Unit,
+) {
     var text by remember(initial) { mutableStateOf(initial) }
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        OutlinedTextField(
-            value = text,
-            onValueChange = { text = it; onApply(it) },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Search filename…") },
-            leadingIcon = { Icon(Icons.Default.Search, null) },
-        )
-        TextButton(onClick = onClose) { Text("Done") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it; onApply(it) },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text(if (semantic) "Try: dog, beach, sunset…" else "Search filename…") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+            )
+            TextButton(onClick = onClose) { Text("Done") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            FilterChip(
+                selected = !semantic,
+                onClick = { onSemanticChange(false) },
+                label = { Text("Filename") },
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.width(6.dp))
+            FilterChip(
+                selected = semantic,
+                onClick = { onSemanticChange(true) },
+                label = { Text("Smart (CLIP)") },
+            )
+        }
     }
 }
 

@@ -39,6 +39,12 @@ interface PhotoApi {
     @GET("api/memories")
     suspend fun memories(): Memories
 
+    @GET("api/search_semantic")
+    suspend fun searchSemantic(
+        @Query("q") q: String,
+        @Query("top_k") topK: Int = 80,
+    ): MediaPage
+
     @GET("api/clusters")
     suspend fun clusters(): List<Cluster>
 
