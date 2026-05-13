@@ -15,8 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
@@ -272,6 +272,16 @@ private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
     }
 }
 
+private fun monthLabel(epoch: Double?): String {
+    if (epoch == null || epoch <= 0) return "Undated"
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = (epoch * 1000).toLong() }
+    val months = arrayOf(
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+    return "${months[cal.get(java.util.Calendar.MONTH)]} ${cal.get(java.util.Calendar.YEAR)}"
+}
+
 @Composable
 private fun Gallery(
     items: List<MediaItem>,
@@ -286,6 +296,21 @@ private fun Gallery(
             .filter { it >= items.size - 20 && items.isNotEmpty() }
             .collect { onLoadMore() }
     }
+    // Pre-compute section boundaries so we can insert full-width headers.
+    val sectioned = remember(items) {
+        val out = mutableListOf<Pair<String?, MediaItem>>()
+        var lastLabel: String? = null
+        for (m in items) {
+            val lbl = monthLabel(m.takenAt)
+            if (lbl != lastLabel) {
+                out += lbl to m  // first item of new section also carries the label
+                lastLabel = lbl
+            } else {
+                out += null to m
+            }
+        }
+        out
+    }
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 110.dp),
         state = gridState,
@@ -294,8 +319,25 @@ private fun Gallery(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(items, key = { _, m -> m.id }) { _, m ->
-            Tile(item = m, serverUrl = serverUrl, onClick = { onItemClick(m) })
+        sectioned.forEachIndexed { idx, (label, m) ->
+            if (label != null) {
+                item(
+                    key = "h-$label-${m.id}",
+                    span = { GridItemSpan(maxLineSpan) },
+                ) {
+                    Text(
+                        label,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 8.dp, top = 12.dp, bottom = 4.dp),
+                    )
+                }
+            }
+            item(key = "t-${m.id}") {
+                Tile(item = m, serverUrl = serverUrl, onClick = { onItemClick(m) })
+            }
         }
     }
 }
