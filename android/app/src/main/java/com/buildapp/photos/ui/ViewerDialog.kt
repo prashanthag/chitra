@@ -1,5 +1,6 @@
 package com.buildapp.photos.ui
 
+import android.content.Intent
 import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -10,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -54,9 +56,25 @@ fun ViewerDialog(
                     modifier = Modifier.fillMaxSize(),
                 )
             }
+            val context = LocalContext.current
             Row(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
             ) {
+                IconButton(onClick = {
+                    val url = if (item.kind == "video") Urls.stream(serverUrl, item.id)
+                    else Urls.full(serverUrl, item.id,
+                        asJpeg = item.ext.equals(".heic", true) || item.ext.equals(".heif", true))
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = if (item.kind == "video") "video/mp4" else "image/jpeg"
+                        putExtra(Intent.EXTRA_TEXT, url)
+                        putExtra(Intent.EXTRA_SUBJECT, item.name)
+                    }
+                    context.startActivity(Intent.createChooser(send, "Share via").apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }) {
+                    Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White)
+                }
                 IconButton(onClick = { onToggleFavorite(item) }) {
                     Icon(
                         if (item.favorite == 1) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
