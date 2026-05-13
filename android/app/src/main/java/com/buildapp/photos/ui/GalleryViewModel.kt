@@ -163,6 +163,13 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun rotate(item: MediaItem, degrees: Int = 90) {
+        val api = api ?: return
+        viewModelScope.launch {
+            try { api.rotate(item.id, degrees) } catch (_: Exception) {}
+        }
+    }
+
     fun setServerUrl(url: String) {
         viewModelScope.launch {
             settings.setServerUrl(url)

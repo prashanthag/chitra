@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material3.Icon
@@ -46,6 +47,7 @@ fun ViewerDialog(
     onTrash: (MediaItem) -> Unit = {},
     onArchive: (MediaItem) -> Unit = {},
     onRestore: (MediaItem) -> Unit = {},
+    onRotate: (MediaItem) -> Unit = {},
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -94,6 +96,11 @@ fun ViewerDialog(
                         Icon(Icons.Default.Restore, contentDescription = "Restore", tint = Color.White)
                     }
                 } else {
+                    if (item.kind == "photo") {
+                        IconButton(onClick = { onRotate(item) }) {
+                            Icon(Icons.Default.RotateRight, contentDescription = "Rotate", tint = Color.White)
+                        }
+                    }
                     IconButton(onClick = { onArchive(item); onDismiss() }) {
                         Icon(
                             if (item.archived == 1) Icons.Default.Unarchive else Icons.Default.Archive,

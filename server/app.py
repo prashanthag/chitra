@@ -640,6 +640,49 @@ def upload_media():
     return jsonify({"ok": True, "count": len(saved), "items": saved})
 
 
+@app.post("/api/media/<mid>/rotate")
+def rotate_media(mid: str):
+    """Lossless-ish rotation: PIL re-encode with EXIF preserved. Updates the
+    original file, invalidates cached thumb, updates width/height in index."""
+    r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r:
+        abort(404)
+    if r["kind"] != "photo":
+        abort(400, "rotation only supported for photos")
+    deg = int(request.args.get("degrees") or (request.json or {}).get("degrees", 90))
+    if deg not in (90, 180, 270, -90):
+        abort(400, "degrees must be 90, 180, 270, or -90")
+    src = Path(r["path"])
+    if not src.exists():
+        abort(404)
+    try:
+        with Image.open(src) as im:
+            exif = im.info.get("exif")
+            rotated = im.rotate(-deg, expand=True)  # PIL rotates CCW; negate for clockwise
+            save_kwargs: dict = {}
+            if exif:
+                save_kwargs["exif"] = exif
+            if src.suffix.lower() in (".jpg", ".jpeg"):
+                save_kwargs["quality"] = 95
+                save_kwargs["subsampling"] = 0
+            rotated.save(src, **save_kwargs)
+            new_w, new_h = rotated.size
+        # Invalidate cached thumbnail
+        t = thumb_path_for(mid)
+        if t.exists():
+            t.unlink()
+        # Update DB
+        db().execute(
+            "UPDATE media SET width = ?, height = ?, mtime = ? WHERE id = ?",
+            (new_w, new_h, src.stat().st_mtime, mid),
+        )
+        db().commit()
+        return jsonify({"ok": True, "width": new_w, "height": new_h})
+    except Exception as e:
+        print(f"[rotate] failed: {e}")
+        abort(500, str(e))
+
+
 @app.post("/api/media/<mid>/favorite")
 def toggle_favorite(mid: str):
     r = db().execute("SELECT 1 FROM favorites WHERE media_id = ?", (mid,)).fetchone()

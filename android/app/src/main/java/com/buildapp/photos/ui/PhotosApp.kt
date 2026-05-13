@@ -267,6 +267,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onTrash = { vm.trash(it) },
             onArchive = { vm.archive(it) },
             onRestore = { vm.restore(it) },
+            onRotate = { vm.rotate(it) },
         )
     }
 

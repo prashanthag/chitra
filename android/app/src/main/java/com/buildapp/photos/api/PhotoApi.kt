@@ -66,6 +66,12 @@ interface PhotoApi {
     @POST("api/media/{id}/archive")
     suspend fun archive(@Path("id") id: String): Map<String, kotlinx.serialization.json.JsonElement>
 
+    @POST("api/media/{id}/rotate")
+    suspend fun rotate(
+        @Path("id") id: String,
+        @Query("degrees") degrees: Int = 90,
+    ): Map<String, kotlinx.serialization.json.JsonElement>
+
     companion object {
         fun create(baseUrl: String): PhotoApi {
             val json = Json {
