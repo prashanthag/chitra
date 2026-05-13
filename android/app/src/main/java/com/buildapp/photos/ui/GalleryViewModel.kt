@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+enum class Filter { ALL, PHOTOS, VIDEOS, FAVORITES }
+
 data class GalleryState(
     val items: List<MediaItem> = emptyList(),
     val loading: Boolean = false,
@@ -20,6 +22,8 @@ data class GalleryState(
     val total: Int = 0,
     val serverUrl: String = "",
     val itemsIndexed: Int = 0,
+    val filter: Filter = Filter.ALL,
+    val query: String = "",
 )
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
@@ -58,7 +62,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val nextPage = s.page + 1
-                val resp = api.media(page = nextPage, perPage = 80)
+                val kind = when (s.filter) {
+                    Filter.PHOTOS -> "photo"
+                    Filter.VIDEOS -> "video"
+                    else -> null
+                }
+                val fav = if (s.filter == Filter.FAVORITES) 1 else null
+                val q = s.query.takeIf { it.isNotBlank() }
+                val resp = api.media(page = nextPage, perPage = 80, kind = kind, favorites = fav, q = q)
                 if (resp.items.size < resp.perPage) endReached = true
                 _state.value = _state.value.copy(
                     items = _state.value.items + resp.items,
@@ -70,6 +81,34 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 _state.value = _state.value.copy(loading = false, error = e.message ?: "error")
             }
+        }
+    }
+
+    fun setFilter(filter: Filter) {
+        if (_state.value.filter == filter) return
+        endReached = false
+        _state.value = _state.value.copy(filter = filter, items = emptyList(), page = 0, error = null)
+        loadNext()
+    }
+
+    fun setQuery(q: String) {
+        if (_state.value.query == q) return
+        endReached = false
+        _state.value = _state.value.copy(query = q, items = emptyList(), page = 0, error = null)
+        loadNext()
+    }
+
+    fun toggleFavorite(item: MediaItem) {
+        val api = api ?: return
+        viewModelScope.launch {
+            try {
+                val r = api.toggleFavorite(item.id)
+                _state.value = _state.value.copy(
+                    items = _state.value.items.map {
+                        if (it.id == item.id) it.copy(favorite = if (r.favorite) 1 else 0) else it
+                    }
+                )
+            } catch (_: Exception) {}
         }
     }
 

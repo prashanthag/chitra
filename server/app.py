@@ -439,28 +439,98 @@ def list_media():
     per_page = min(200, max(1, int(request.args.get("per_page", 60))))
     kind = request.args.get("kind")
     album = request.args.get("album")
-    q = "SELECT id,name,kind,ext,mime,size,taken_at,width,height,album FROM media"
-    where = []
+    q = request.args.get("q")
+    favorites_only = request.args.get("favorites") in ("1", "true")
+    year = request.args.get("year")
+    month = request.args.get("month")
+
+    sql_select = (
+        "SELECT m.id,m.name,m.kind,m.ext,m.mime,m.size,m.taken_at,"
+        "m.width,m.height,m.album, "
+        "CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite "
+        "FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
+    )
+    where: list[str] = []
     args: list = []
     if kind in ("photo", "video"):
-        where.append("kind = ?")
+        where.append("m.kind = ?")
         args.append(kind)
     if album:
-        where.append("album = ?")
+        where.append("m.album = ?")
         args.append(album)
-    if where:
-        q += " WHERE " + " AND ".join(where)
-    q += " ORDER BY COALESCE(taken_at, mtime) DESC LIMIT ? OFFSET ?"
-    args += [per_page, (page - 1) * per_page]
-    rows = [dict(r) for r in db().execute(q, args).fetchall()]
+    if favorites_only:
+        where.append("f.media_id IS NOT NULL")
+    if q:
+        where.append("LOWER(m.name) LIKE ?")
+        args.append(f"%{q.lower()}%")
+    if year:
+        try:
+            y = int(year)
+            start = time.mktime(time.struct_time((y, 1, 1, 0, 0, 0, 0, 1, -1)))
+            end = time.mktime(time.struct_time((y + 1, 1, 1, 0, 0, 0, 0, 1, -1)))
+            where.append("COALESCE(m.taken_at, m.mtime) >= ?")
+            where.append("COALESCE(m.taken_at, m.mtime) < ?")
+            args.extend([start, end])
+        except ValueError:
+            pass
+    if month and year:
+        try:
+            y, mo = int(year), int(month)
+            start = time.mktime(time.struct_time((y, mo, 1, 0, 0, 0, 0, 1, -1)))
+            ny, nm = (y + 1, 1) if mo == 12 else (y, mo + 1)
+            end = time.mktime(time.struct_time((ny, nm, 1, 0, 0, 0, 0, 1, -1)))
+            where.append("COALESCE(m.taken_at, m.mtime) >= ?")
+            where.append("COALESCE(m.taken_at, m.mtime) < ?")
+            args.extend([start, end])
+        except ValueError:
+            pass
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = (
+        sql_select
+        + where_sql
+        + " ORDER BY COALESCE(m.taken_at, m.mtime) DESC LIMIT ? OFFSET ?"
+    )
+    args_full = args + [per_page, (page - 1) * per_page]
+    rows = [dict(r) for r in db().execute(sql, args_full).fetchall()]
     total = db().execute(
-        "SELECT COUNT(*) AS n FROM media"
-        + (" WHERE " + " AND ".join(where) if where else ""),
-        args[:-2],
+        "SELECT COUNT(*) AS n FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
+        + where_sql,
+        args,
     ).fetchone()["n"]
     return jsonify(
         {"page": page, "per_page": per_page, "total": total, "items": rows}
     )
+
+
+@app.get("/api/timeline")
+def timeline():
+    """Return counts grouped by year, then month — for Google-Photos-style scrubber."""
+    rows = db().execute(
+        """SELECT strftime('%Y', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS y,
+                  strftime('%m', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS m,
+                  COUNT(*) AS n
+           FROM media
+           GROUP BY y, m
+           ORDER BY y DESC, m DESC"""
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/media/<mid>/favorite")
+def toggle_favorite(mid: str):
+    r = db().execute("SELECT 1 FROM favorites WHERE media_id = ?", (mid,)).fetchone()
+    if r:
+        db().execute("DELETE FROM favorites WHERE media_id = ?", (mid,))
+        favorited = False
+    else:
+        db().execute(
+            "INSERT INTO favorites (media_id, created_at) VALUES (?, ?)",
+            (mid, time.time()),
+        )
+        favorited = True
+    db().commit()
+    return jsonify({"ok": True, "favorite": favorited})
 
 
 @app.get("/api/albums")

@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -18,12 +19,15 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,11 +43,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +57,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.Urls
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +66,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var selected by remember { mutableStateOf<MediaItem?>(null) }
     var showSettings by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -67,7 +75,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     Column {
                         Text("Photos", fontSize = 18.sp)
                         Text(
-                            text = "${state.items.size}/${state.total} loaded · ${state.itemsIndexed} indexed",
+                            text = subtitleFor(state),
                             fontSize = 11.sp,
                             color = Color.Gray,
                             maxLines = 1,
@@ -76,6 +84,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSearch = !showSearch }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search")
+                    }
                     IconButton(onClick = { vm.rescan() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Rescan")
                     }
@@ -86,33 +97,47 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             )
         },
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize()) {
-            when {
-                state.error != null && state.items.isEmpty() -> ErrorView(
-                    error = state.error!!,
-                    serverUrl = state.serverUrl,
-                    onRetry = { vm.refresh() },
-                    onSettings = { showSettings = true },
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            if (showSearch) {
+                SearchBar(
+                    initial = state.query,
+                    onApply = { vm.setQuery(it) },
+                    onClose = { showSearch = false; vm.setQuery("") },
                 )
-                state.items.isEmpty() && state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    CircularProgressIndicator()
+            }
+            FilterRow(current = state.filter, onSelect = { vm.setFilter(it) })
+            Box(Modifier.fillMaxSize()) {
+                when {
+                    state.error != null && state.items.isEmpty() -> ErrorView(
+                        error = state.error!!,
+                        serverUrl = state.serverUrl,
+                        onRetry = { vm.refresh() },
+                        onSettings = { showSettings = true },
+                    )
+                    state.items.isEmpty() && state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                    state.items.isEmpty() && !state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                        Text("No items", color = Color.Gray)
+                    }
+                    else -> Gallery(
+                        items = state.items,
+                        serverUrl = state.serverUrl,
+                        onItemClick = { selected = it },
+                        onLoadMore = { vm.loadNext() },
+                    )
                 }
-                else -> Gallery(
-                    items = state.items,
-                    serverUrl = state.serverUrl,
-                    onItemClick = { selected = it },
-                    onLoadMore = { vm.loadNext() },
-                    loadingMore = state.loading,
-                )
             }
         }
     }
 
     selected?.let { item ->
+        val live = state.items.firstOrNull { it.id == item.id } ?: item
         ViewerDialog(
-            item = item,
+            item = live,
             serverUrl = state.serverUrl,
             onDismiss = { selected = null },
+            onToggleFavorite = { vm.toggleFavorite(it) },
         )
     }
 
@@ -125,39 +150,80 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     }
 }
 
+private fun subtitleFor(state: GalleryState): String {
+    val parts = mutableListOf<String>()
+    parts += "${state.items.size}/${state.total}"
+    if (state.itemsIndexed > 0) parts += "${state.itemsIndexed} indexed"
+    if (state.query.isNotBlank()) parts += "q=\"${state.query}\""
+    return parts.joinToString(" · ")
+}
+
+@Composable
+private fun SearchBar(initial: String, onApply: (String) -> Unit, onClose: () -> Unit) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it; onApply(it) },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("Search filename…") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+        )
+        TextButton(onClick = onClose) { Text("Done") }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Filter.values().forEach { f ->
+            FilterChip(
+                selected = current == f,
+                onClick = { onSelect(f) },
+                label = { Text(f.name.lowercase().replaceFirstChar { it.titlecase() }) },
+            )
+        }
+    }
+}
+
 @Composable
 private fun Gallery(
     items: List<MediaItem>,
     serverUrl: String,
     onItemClick: (MediaItem) -> Unit,
     onLoadMore: () -> Unit,
-    loadingMore: Boolean,
 ) {
     val gridState = rememberLazyGridState()
-    LaunchedEffect(items.size, gridState) {
-        // Trigger load-more when we get near the end
-        snapshotLastVisible(gridState)?.let { last ->
-            if (last >= items.size - 20) onLoadMore()
-        }
+    LaunchedEffect(gridState, items.size) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .distinctUntilChanged()
+            .filter { it >= items.size - 20 && items.isNotEmpty() }
+            .collect { onLoadMore() }
     }
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 110.dp),
         state = gridState,
+        contentPadding = PaddingValues(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        itemsIndexed(items, key = { _, m -> m.id }) { idx, m ->
+        itemsIndexed(items, key = { _, m -> m.id }) { _, m ->
             Tile(item = m, serverUrl = serverUrl, onClick = { onItemClick(m) })
-            if (idx >= items.size - 12 && !loadingMore) {
-                LaunchedEffect(idx) { onLoadMore() }
-            }
         }
     }
-}
-
-private fun snapshotLastVisible(state: androidx.compose.foundation.lazy.grid.LazyGridState): Int? {
-    return state.layoutInfo.visibleItemsInfo.lastOrNull()?.index
 }
 
 @Composable
@@ -169,7 +235,7 @@ private fun Tile(item: MediaItem, serverUrl: String, onClick: () -> Unit) {
             .clickable(onClick = onClick),
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+            model = ImageRequest.Builder(LocalContext.current)
                 .data(Urls.thumb(serverUrl, item.id))
                 .crossfade(true)
                 .build(),
@@ -179,9 +245,7 @@ private fun Tile(item: MediaItem, serverUrl: String, onClick: () -> Unit) {
         )
         if (item.kind == "video") {
             Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(4.dp)
+                Modifier.align(Alignment.BottomEnd).padding(4.dp)
                     .background(Color(0xAA000000), shape = androidx.compose.foundation.shape.CircleShape)
                     .padding(2.dp),
             ) {
@@ -192,6 +256,14 @@ private fun Tile(item: MediaItem, serverUrl: String, onClick: () -> Unit) {
                     modifier = Modifier.size(16.dp),
                 )
             }
+        }
+        if (item.favorite == 1) {
+            Icon(
+                Icons.Default.Favorite,
+                contentDescription = "Favorite",
+                tint = Color(0xFFE91E63),
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp).size(14.dp),
+            )
         }
     }
 }

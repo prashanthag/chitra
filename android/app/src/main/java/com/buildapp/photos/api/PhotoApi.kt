@@ -22,16 +22,26 @@ interface PhotoApi {
         @Query("per_page") perPage: Int = 60,
         @Query("kind") kind: String? = null,
         @Query("album") album: String? = null,
+        @Query("q") q: String? = null,
+        @Query("favorites") favorites: Int? = null,
+        @Query("year") year: Int? = null,
+        @Query("month") month: Int? = null,
     ): MediaPage
 
     @GET("api/albums")
     suspend fun albums(): List<Album>
+
+    @GET("api/timeline")
+    suspend fun timeline(): List<TimelineBucket>
 
     @GET("api/persons")
     suspend fun persons(): List<Person>
 
     @POST("api/rescan")
     suspend fun rescan(): Map<String, String>
+
+    @POST("api/media/{id}/favorite")
+    suspend fun toggleFavorite(@Path("id") id: String): FavoriteResp
 
     companion object {
         fun create(baseUrl: String): PhotoApi {

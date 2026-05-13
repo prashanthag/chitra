@@ -15,6 +15,20 @@ data class MediaItem(
     val width: Int? = null,
     val height: Int? = null,
     val album: String? = null,
+    val favorite: Int = 0,
+)
+
+@Serializable
+data class TimelineBucket(
+    val y: String,
+    val m: String,
+    val n: Int,
+)
+
+@Serializable
+data class FavoriteResp(
+    val ok: Boolean,
+    val favorite: Boolean,
 )
 
 @Serializable
