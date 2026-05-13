@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Server runtime / generated
+server/cache/
+server/server.log
+server/server.pid
+
+# Android / Gradle
+.gradle/
+build/
+android/local.properties
+android/.idea/
+android/captures/
+*.iml
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

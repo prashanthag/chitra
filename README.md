@@ -1,0 +1,48 @@
+# Chitra — self-hosted Google Photos
+
+A Plex-style photo + video server on your own machine, with an Android client.
+
+- **Server** (`server/`): Python/Flask. Scans a media directory, builds a SQLite index, generates JPEG thumbnails on demand (CUDA-accelerated for video via ffmpeg `-hwaccel cuda`), serves originals with HTTP Range, on-the-fly HEIC → JPEG, and NVENC video transcode.
+- **Android client** (`android/`): Kotlin + Jetpack Compose. Thumbnail grid, full-screen viewer, ExoPlayer for video, configurable server URL.
+
+## Run the server
+
+```bash
+cd server
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+PHOTO_ROOT=/path/to/photos .venv/bin/python app.py
+# Listens on 0.0.0.0:8000
+```
+
+## Build the Android APK
+
+```bash
+cd android
+./gradlew assembleDebug
+# APK at app/build/outputs/apk/debug/app-debug.apk
+```
+
+Install on a phone (USB debugging enabled):
+
+```bash
+adb install android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+In the app, open Settings (gear icon) and set the server URL to `http://<server-lan-ip>:8000`.
+
+## API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET  /api/health` | Status + scan progress |
+| `POST /api/rescan` | Trigger re-scan |
+| `GET  /api/media?page=N&per_page=60&kind=&album=` | Paginated media list |
+| `GET  /api/media/{id}` | Item metadata |
+| `GET  /api/media/{id}/thumb` | 480px JPEG thumbnail |
+| `GET  /api/media/{id}/full?as=jpeg` | Original (HEIC supports `?as=jpeg`) |
+| `GET  /api/media/{id}/stream.mp4` | NVENC-transcoded H.264 MP4 |
+| `GET  /api/albums` | Album list (top-level subdirs) |
+| `GET  /api/persons` | Person tags |
+
+Built with Claude Code.

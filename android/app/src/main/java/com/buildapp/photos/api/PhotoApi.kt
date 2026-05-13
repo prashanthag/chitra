@@ -1,0 +1,73 @@
+package com.buildapp.photos.api
+
+import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import retrofit2.http.GET
+import retrofit2.http.POST
+import retrofit2.http.Path
+import retrofit2.http.Query
+import java.util.concurrent.TimeUnit
+
+interface PhotoApi {
+    @GET("api/health")
+    suspend fun health(): Health
+
+    @GET("api/media")
+    suspend fun media(
+        @Query("page") page: Int,
+        @Query("per_page") perPage: Int = 60,
+        @Query("kind") kind: String? = null,
+        @Query("album") album: String? = null,
+    ): MediaPage
+
+    @GET("api/albums")
+    suspend fun albums(): List<Album>
+
+    @GET("api/persons")
+    suspend fun persons(): List<Person>
+
+    @POST("api/rescan")
+    suspend fun rescan(): Map<String, String>
+
+    companion object {
+        fun create(baseUrl: String): PhotoApi {
+            val json = Json {
+                ignoreUnknownKeys = true
+                explicitNulls = false
+                coerceInputValues = true
+            }
+            val logging = HttpLoggingInterceptor().apply {
+                level = HttpLoggingInterceptor.Level.BASIC
+            }
+            val client = OkHttpClient.Builder()
+                .addInterceptor(logging)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build()
+            val baseNormalized = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
+            return Retrofit.Builder()
+                .baseUrl(baseNormalized)
+                .client(client)
+                .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+                .build()
+                .create(PhotoApi::class.java)
+        }
+    }
+}
+
+object Urls {
+    fun thumb(baseUrl: String, id: String): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb"
+
+    fun full(baseUrl: String, id: String, asJpeg: Boolean = false): String {
+        val base = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
+        return base + "api/media/$id/full" + if (asJpeg) "?as=jpeg" else ""
+    }
+
+    fun stream(baseUrl: String, id: String): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/stream.mp4"
+}

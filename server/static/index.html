@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Photos</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, sans-serif;
+         background:#0e0e10; color:#eee; }
+  header { padding: 14px 18px; display:flex; align-items:center; gap:14px;
+           border-bottom:1px solid #222; position:sticky; top:0; background:#0e0e10; z-index:10; }
+  header h1 { font-size:18px; margin:0; }
+  .pill { background:#1e1e22; padding:4px 10px; border-radius:999px; font-size:12px; color:#aaa; }
+  #grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+          gap:4px; padding:4px; }
+  .tile { position:relative; aspect-ratio:1; background:#222; cursor:pointer; overflow:hidden; }
+  .tile img { width:100%; height:100%; object-fit:cover; display:block; }
+  .badge { position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,.6);
+           padding:2px 6px; border-radius:4px; font-size:11px; }
+  #viewer { position:fixed; inset:0; background:rgba(0,0,0,.95);
+            display:none; align-items:center; justify-content:center; z-index:100; }
+  #viewer.on { display:flex; }
+  #viewer img, #viewer video { max-width:96vw; max-height:92vh; }
+  #close { position:absolute; top:14px; right:18px; font-size:28px; cursor:pointer; }
+  #status { padding:14px; color:#888; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Photos</h1>
+  <span class="pill" id="count">–</span>
+  <span class="pill" id="scan">–</span>
+  <button onclick="rescan()" style="margin-left:auto;background:#2a2a2e;color:#eee;border:0;padding:6px 12px;border-radius:6px;cursor:pointer">Rescan</button>
+</header>
+<div id="grid"></div>
+<div id="status">Loading…</div>
+<div id="viewer" onclick="if(event.target.id==='viewer') closeViewer()">
+  <span id="close" onclick="closeViewer()">×</span>
+  <div id="vbody"></div>
+</div>
+<script>
+let page = 1, loading = false, done = false;
+async function health() {
+  const r = await fetch('/api/health'); const j = await r.json();
+  document.getElementById('count').textContent = j.items_indexed + ' items';
+  document.getElementById('scan').textContent =
+    j.scan.running ? ('scanning ' + j.scan.scanned + '/' + j.scan.total_seen) : 'idle';
+}
+async function loadMore() {
+  if (loading || done) return; loading = true;
+  const r = await fetch('/api/media?page=' + page + '&per_page=80');
+  const j = await r.json();
+  const g = document.getElementById('grid');
+  for (const m of j.items) {
+    const el = document.createElement('div'); el.className = 'tile';
+    el.innerHTML = '<img loading="lazy" src="/api/media/' + m.id + '/thumb">'
+      + (m.kind === 'video' ? '<span class="badge">▶</span>' : '');
+    el.onclick = () => openViewer(m);
+    g.appendChild(el);
+  }
+  if (j.items.length < j.per_page) done = true;
+  page++;
+  document.getElementById('status').textContent =
+    done ? 'End (' + j.total + ' items)' : 'Scroll for more…';
+  loading = false;
+}
+function openViewer(m) {
+  const v = document.getElementById('viewer');
+  const b = document.getElementById('vbody');
+  if (m.kind === 'video') {
+    b.innerHTML = '<video controls autoplay src="/api/media/' + m.id + '/full"></video>';
+  } else {
+    const url = (m.ext === '.heic' || m.ext === '.heif')
+      ? '/api/media/' + m.id + '/full?as=jpeg'
+      : '/api/media/' + m.id + '/full';
+    b.innerHTML = '<img src="' + url + '">';
+  }
+  v.classList.add('on');
+}
+function closeViewer() {
+  document.getElementById('viewer').classList.remove('on');
+  document.getElementById('vbody').innerHTML = '';
+}
+async function rescan() {
+  await fetch('/api/rescan', { method: 'POST' });
+  health();
+}
+window.addEventListener('scroll', () => {
+  if (window.innerHeight + window.scrollY > document.body.offsetHeight - 600) loadMore();
+});
+health(); loadMore(); setInterval(health, 4000);
+</script>
+</body>
+</html>
