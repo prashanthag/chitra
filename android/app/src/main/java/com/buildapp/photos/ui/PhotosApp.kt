@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -55,10 +56,17 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.buildapp.photos.api.Cluster
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.Urls
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+
+private sealed interface Route {
+    data object Gallery : Route
+    data object People : Route
+    data class ClusterMedia(val cluster: Cluster) : Route
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,6 +75,36 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     var selected by remember { mutableStateOf<MediaItem?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
+    var route by remember { mutableStateOf<Route>(Route.Gallery) }
+
+    when (val r = route) {
+        is Route.People -> {
+            PeopleScreen(
+                serverUrl = state.serverUrl,
+                onBack = { route = Route.Gallery },
+                onClusterSelected = { route = Route.ClusterMedia(it) },
+            )
+            return
+        }
+        is Route.ClusterMedia -> {
+            ClusterMediaScreen(
+                serverUrl = state.serverUrl,
+                cluster = r.cluster,
+                onBack = { route = Route.People },
+                onItemClick = { selected = it },
+            )
+            selected?.let { item ->
+                ViewerDialog(
+                    item = item,
+                    serverUrl = state.serverUrl,
+                    onDismiss = { selected = null },
+                    onToggleFavorite = { vm.toggleFavorite(it) },
+                )
+            }
+            return
+        }
+        else -> Unit
+    }
 
     Scaffold(
         topBar = {
@@ -84,6 +122,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { route = Route.People }) {
+                        Icon(Icons.Default.Face, contentDescription = "People")
+                    }
                     IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }

@@ -624,6 +624,107 @@ def media_full(mid: str):
     return send_file(src, mimetype=mime, conditional=True)
 
 
+# ---------- Face clusters (populated by face_indexer.py) ----------
+
+
+def cluster_thumb_path(cid: int) -> Path:
+    d = CACHE_DIR / "clusters"
+    d.mkdir(exist_ok=True)
+    return d / f"{cid}.jpg"
+
+
+@app.get("/api/clusters")
+def list_clusters():
+    rows = db().execute(
+        """SELECT c.id, c.name, c.count, c.rep_face_id,
+                  f.media_id AS rep_media_id
+           FROM clusters c
+           LEFT JOIN faces f ON f.id = c.rep_face_id
+           ORDER BY c.count DESC"""
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/clusters/<int:cid>/name")
+def name_cluster(cid: int):
+    name = (request.json or {}).get("name", "").strip()
+    db().execute("UPDATE clusters SET name = ? WHERE id = ?", (name or None, cid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/clusters/<int:cid>/media")
+def cluster_media(cid: int):
+    rows = db().execute(
+        """SELECT DISTINCT m.id, m.name, m.kind, m.ext, m.taken_at, m.album
+           FROM media m JOIN faces f ON f.media_id = m.id
+           WHERE f.cluster_id = ?
+           ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
+        (cid,),
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/clusters/<int:cid>/thumb")
+def cluster_thumb(cid: int):
+    p = cluster_thumb_path(cid)
+    if p.exists() and p.stat().st_size > 0:
+        return send_file(p, mimetype="image/jpeg")
+    r = db().execute(
+        """SELECT f.bbox, m.path FROM clusters c
+           JOIN faces f ON f.id = c.rep_face_id
+           JOIN media m ON m.id = f.media_id
+           WHERE c.id = ?""",
+        (cid,),
+    ).fetchone()
+    if not r:
+        abort(404)
+    src = Path(r["path"])
+    if not src.exists():
+        abort(404)
+    try:
+        x1, y1, x2, y2 = (int(v) for v in r["bbox"].split(","))
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            w, h = im.size
+            dx = int((x2 - x1) * 0.2)
+            dy = int((y2 - y1) * 0.2)
+            x1 = max(0, x1 - dx)
+            y1 = max(0, y1 - dy)
+            x2 = min(w, x2 + dx)
+            y2 = min(h, y2 + dy)
+            crop = im.crop((x1, y1, x2, y2))
+            crop.thumbnail((256, 256), Image.LANCZOS)
+            crop.save(p, "JPEG", quality=82)
+        return send_file(p, mimetype="image/jpeg")
+    except Exception as e:
+        print(f"[cluster thumb] failed: {e}")
+        abort(500)
+
+
+@app.get("/api/faces/status")
+def faces_status():
+    cur = db()
+    try:
+        n_processed = cur.execute("SELECT COUNT(*) AS n FROM face_state").fetchone()["n"]
+    except sqlite3.OperationalError:
+        n_processed = 0
+    try:
+        n_faces = cur.execute("SELECT COUNT(*) AS n FROM faces").fetchone()["n"]
+        n_clusters = cur.execute("SELECT COUNT(*) AS n FROM clusters").fetchone()["n"]
+    except sqlite3.OperationalError:
+        n_faces = n_clusters = 0
+    n_total = cur.execute("SELECT COUNT(*) AS n FROM media WHERE kind='photo'").fetchone()["n"]
+    return jsonify(
+        {
+            "processed": n_processed,
+            "total_photos": n_total,
+            "faces": n_faces,
+            "clusters": n_clusters,
+        }
+    )
+
+
 # ---------- Person tagging (manual stub; ready for ML later) ----------
 
 

@@ -46,6 +46,23 @@ data class Album(
 )
 
 @Serializable
+data class Cluster(
+    val id: Int,
+    val name: String? = null,
+    val count: Int,
+    @SerialName("rep_face_id") val repFaceId: Int? = null,
+    @SerialName("rep_media_id") val repMediaId: String? = null,
+)
+
+@Serializable
+data class FacesStatus(
+    val processed: Int,
+    @SerialName("total_photos") val totalPhotos: Int,
+    val faces: Int,
+    val clusters: Int,
+)
+
+@Serializable
 data class Person(
     val id: Int,
     val name: String,

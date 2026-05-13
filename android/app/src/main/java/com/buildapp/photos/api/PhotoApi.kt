@@ -34,6 +34,15 @@ interface PhotoApi {
     @GET("api/timeline")
     suspend fun timeline(): List<TimelineBucket>
 
+    @GET("api/clusters")
+    suspend fun clusters(): List<Cluster>
+
+    @GET("api/clusters/{id}/media")
+    suspend fun clusterMedia(@Path("id") id: Int): List<MediaItem>
+
+    @GET("api/faces/status")
+    suspend fun facesStatus(): FacesStatus
+
     @GET("api/persons")
     suspend fun persons(): List<Person>
 
@@ -80,4 +89,7 @@ object Urls {
 
     fun stream(baseUrl: String, id: String): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/stream.mp4"
+
+    fun clusterThumb(baseUrl: String, id: Int): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/clusters/$id/thumb"
 }
