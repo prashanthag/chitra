@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.PhotoAlbum
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -56,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.buildapp.photos.api.Album
 import com.buildapp.photos.api.Cluster
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.Urls
@@ -66,6 +68,8 @@ private sealed interface Route {
     data object Gallery : Route
     data object People : Route
     data class ClusterMedia(val cluster: Cluster) : Route
+    data object Albums : Route
+    data class AlbumMedia(val album: Album) : Route
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,6 +107,31 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             }
             return
         }
+        is Route.Albums -> {
+            AlbumsScreen(
+                serverUrl = state.serverUrl,
+                onBack = { route = Route.Gallery },
+                onAlbumSelected = { route = Route.AlbumMedia(it) },
+            )
+            return
+        }
+        is Route.AlbumMedia -> {
+            AlbumMediaScreen(
+                serverUrl = state.serverUrl,
+                album = r.album,
+                onBack = { route = Route.Albums },
+                onItemClick = { selected = it },
+            )
+            selected?.let { item ->
+                ViewerDialog(
+                    item = item,
+                    serverUrl = state.serverUrl,
+                    onDismiss = { selected = null },
+                    onToggleFavorite = { vm.toggleFavorite(it) },
+                )
+            }
+            return
+        }
         else -> Unit
     }
 
@@ -122,14 +151,14 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { route = Route.Albums }) {
+                        Icon(Icons.Default.PhotoAlbum, contentDescription = "Albums")
+                    }
                     IconButton(onClick = { route = Route.People }) {
                         Icon(Icons.Default.Face, contentDescription = "People")
                     }
                     IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
-                    }
-                    IconButton(onClick = { vm.rescan() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Rescan")
                     }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
