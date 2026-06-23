@@ -100,6 +100,10 @@
           border:1px solid var(--line); padding:10px 16px; border-radius:10px; font-size:13px;
           z-index:200; opacity:0; transition:opacity .2s; }
   .toast.on { opacity:1; }
+  #dropzone { position:fixed; inset:0; z-index:150; display:none; align-items:center; justify-content:center;
+          background:rgba(91,140,255,.12); border:3px dashed var(--accent); margin:10px; border-radius:16px;
+          font-size:22px; font-weight:600; color:#cdd9ff; pointer-events:none; }
+  #dropzone.on { display:flex; }
 </style>
 </head>
 <body>
@@ -109,7 +113,9 @@
     <span class="pill" id="count">–</span>
     <span class="pill" id="scan">–</span>
     <span class="grow"></span>
+    <button class="btn accent" onclick="document.getElementById('fileInput').click()">↑ Upload</button>
     <button class="btn" onclick="rescan()">Rescan</button>
+    <input id="fileInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="uploadFiles(this.files)" />
   </header>
 
   <nav id="nav">
@@ -156,6 +162,7 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="dropzone">Drop photos &amp; videos to upload</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -430,6 +437,36 @@ function pollScan(){
   clearInterval(scanPoll);
   scanPoll = setInterval(async ()=>{ const running = await refreshHealth(); if(!running) clearInterval(scanPoll); }, 1500);
 }
+
+// ---------- upload ----------
+async function uploadFiles(fileList){
+  const files = [...fileList].filter(f=> f.type.startsWith('image/') || f.type.startsWith('video/'));
+  if(!files.length){ toast('No image/video files'); return; }
+  const fd = new FormData();
+  files.forEach(f=> fd.append('file', f, f.name));
+  toast(`Uploading ${files.length} file${files.length>1?'s':''}…`);
+  try{
+    const r = await fetch('/api/upload', {method:'POST', body:fd});
+    if(!r.ok) throw {status:r.status};
+    const data = await r.json();
+    const ok = (data.items||[]).filter(i=>i.indexed).length;
+    toast(`Uploaded ${ok}/${data.count} — added to library`);
+    refreshHealth();
+    // jump to Photos and reload so the new items show at the top
+    switchView('photos');
+  }catch(e){ toast('Upload failed ('+(e.status||e)+')'); }
+  $('#fileInput').value = '';
+}
+
+// drag-and-drop anywhere on the window
+let dragDepth = 0;
+window.addEventListener('dragenter', e=>{ e.preventDefault(); dragDepth++; $('#dropzone').classList.add('on'); });
+window.addEventListener('dragover', e=> e.preventDefault());
+window.addEventListener('dragleave', e=>{ e.preventDefault(); if(--dragDepth<=0){ dragDepth=0; $('#dropzone').classList.remove('on'); } });
+window.addEventListener('drop', e=>{
+  e.preventDefault(); dragDepth=0; $('#dropzone').classList.remove('on');
+  if(e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+});
 
 // ---------- infinite scroll ----------
 io = new IntersectionObserver(entries=>{

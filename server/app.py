@@ -820,7 +820,10 @@ def upload_media():
     upload_dir = MEDIA_ROOT / "uploads" / time.strftime("%Y-%m-%d")
     upload_dir.mkdir(parents=True, exist_ok=True)
     saved = []
-    for f in request.files.values():
+    # Collect every uploaded file, including multiple parts that share a field
+    # name (MultiDict.values() would yield only the first per key).
+    all_files = [f for key in request.files for f in request.files.getlist(key)]
+    for f in all_files:
         if not f.filename:
             continue
         # Strip path components from filename
