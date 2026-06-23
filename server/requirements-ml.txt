@@ -1,0 +1,13 @@
+# Optional ML dependencies for the standalone indexers (not needed by the core
+# Flask server). Install with:  .venv/bin/pip install -r requirements-ml.txt
+#
+# face_indexer.py — face detection + clustering -> People tab
+insightface==1.0.1
+onnxruntime==1.27.0
+opencv-python-headless==4.13.0.92
+scikit-learn==1.9.0
+numpy==2.5.0
+
+# clip_indexer.py — CLIP embeddings for semantic ("smart") search additionally
+# needs torch + open_clip_torch (large; install separately if you want it):
+#   .venv/bin/pip install torch open_clip_torch
