@@ -32,3 +32,6 @@ android/captures/
 .DS_Store
 .vscode/
 .idea/
+
+# root-level runtime pid
+server.pid
