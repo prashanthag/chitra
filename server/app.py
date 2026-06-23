@@ -443,6 +443,20 @@ def make_video_thumb(src: Path, dst: Path) -> bool:
     return False
 
 
+_placeholder_bytes: bytes | None = None
+
+
+def _placeholder_thumb() -> bytes:
+    """A small gray JPEG shown when a thumbnail can't be generated. Built once."""
+    global _placeholder_bytes
+    if _placeholder_bytes is None:
+        im = Image.new("RGB", (THUMB_SIZE, THUMB_SIZE), (40, 40, 44))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=70)
+        _placeholder_bytes = buf.getvalue()
+    return _placeholder_bytes
+
+
 def ensure_thumb(row: sqlite3.Row) -> Path | None:
     p = thumb_path_for(row["id"])
     if p.exists() and p.stat().st_size > 0:
@@ -517,6 +531,15 @@ def _close_db(_exc):
 def health():
     cur = db().execute("SELECT COUNT(*) AS n FROM media")
     n = cur.fetchone()["n"]
+    # Cheap capability check: semantic search only works once CLIP embeddings exist.
+    # The clip_embedding column itself only appears after the CLIP indexer runs.
+    try:
+        clip_n = db().execute(
+            "SELECT COUNT(*) AS n FROM media "
+            "WHERE clip_embedding IS NOT NULL AND length(clip_embedding) > 0"
+        ).fetchone()["n"]
+    except sqlite3.OperationalError:
+        clip_n = 0
     return jsonify(
         {
             "ok": True,
@@ -524,6 +547,7 @@ def health():
             "media_root_exists": MEDIA_ROOT.exists(),
             "heic_supported": HEIC_OK,
             "items_indexed": n,
+            "clip_indexed": clip_n,
             "scan": dict(_scan_state),
         }
     )
@@ -1098,8 +1122,16 @@ def toggle_favorite(mid: str):
 
 @app.get("/api/albums")
 def list_albums():
+    # Most-recent item per album doubles as the album cover thumbnail.
     rows = db().execute(
-        "SELECT album, COUNT(*) AS count FROM media GROUP BY album ORDER BY album"
+        """SELECT m.album,
+                  COUNT(*) AS count,
+                  (SELECT id FROM media m2
+                   WHERE m2.album = m.album AND m2.trashed_at IS NULL
+                   ORDER BY COALESCE(m2.taken_at, m2.mtime) DESC LIMIT 1) AS cover
+           FROM media m
+           WHERE m.trashed_at IS NULL
+           GROUP BY m.album ORDER BY m.album"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -1119,7 +1151,11 @@ def media_thumb(mid: str):
         abort(404)
     p = ensure_thumb(r)
     if not p:
-        abort(500, "thumb generation failed")
+        # Unreadable/corrupt source — serve a neutral placeholder so the grid
+        # shows a tile instead of a broken image + noisy 500.
+        return send_file(
+            io.BytesIO(_placeholder_thumb()), mimetype="image/jpeg"
+        )
     return send_file(p, mimetype="image/jpeg", conditional=True)
 
 
@@ -1198,13 +1234,17 @@ def cluster_thumb_path(cid: int) -> Path:
 
 @app.get("/api/clusters")
 def list_clusters():
-    rows = db().execute(
-        """SELECT c.id, c.name, c.count, c.rep_face_id,
-                  f.media_id AS rep_media_id
-           FROM clusters c
-           LEFT JOIN faces f ON f.id = c.rep_face_id
-           ORDER BY c.count DESC"""
-    ).fetchall()
+    try:
+        rows = db().execute(
+            """SELECT c.id, c.name, c.count, c.rep_face_id,
+                      f.media_id AS rep_media_id
+               FROM clusters c
+               LEFT JOIN faces f ON f.id = c.rep_face_id
+               ORDER BY c.count DESC"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Face indexer hasn't run yet, so faces/clusters tables don't exist.
+        return jsonify([])
     return jsonify([dict(r) for r in rows])
 
 
@@ -1357,6 +1397,11 @@ def index():
 @app.get("/static/<path:p>")
 def static_file(p):
     return send_from_directory(APP_DIR / "static", p)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return ("", 204)
 
 
 # ---------- Entrypoint ----------

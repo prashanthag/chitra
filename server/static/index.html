@@ -164,8 +164,9 @@ const getJSON = async (p, o) => { const r = await api(p, o); if(!r.ok) throw {st
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 const PER = 80;
-let state = { view:'photos', page:1, loading:false, done:false, params:{}, items:[], cur:-1 };
+let state = { view:'photos', page:1, loading:false, done:false, params:{}, items:[], cur:-1, gen:0 };
 let io;
+let CLIP_OK = false;  // is smart (CLIP) search available? set from /api/health
 
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('on'),1800); }
 
@@ -177,6 +178,9 @@ function setActive(view){
   document.querySelectorAll('#nav .item').forEach(el=> el.classList.toggle('active', el.dataset.view===view));
 }
 function switchView(view, params){
+  // Bump generation so any in-flight loadGrid from the previous view is ignored,
+  // and clear the loading flag so the new view can fetch immediately.
+  state.gen++; state.loading=false;
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
   setActive(view);
   $('#searchbar').classList.toggle('on', view==='search');
@@ -202,8 +206,10 @@ function gridQuery(){
 async function loadGrid(reset){
   if(state.loading || state.done) return;
   state.loading = true;
+  const gen = state.gen;
   try{
     const data = await getJSON(gridQuery());
+    if(gen !== state.gen) return;  // view changed mid-flight; discard
     if(reset){ $('#count').textContent = data.total+' items'; }
     appendTiles(data.items);
     state.items.push(...data.items);
@@ -275,9 +281,11 @@ async function loadAlbums(){
   try{ albums = await getJSON('/api/albums'); }catch(e){}
   $('#cards').innerHTML = albums.map(a=>{
     const nm = a.album==='_root'? 'Library root' : a.album;
+    const cover = a.cover
+      ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
+      : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
     return `<div class="card" data-album="${esc(a.album)}">
-      <div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>
-      <div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
+      ${cover}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
   }).join('');
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
     el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
@@ -306,18 +314,22 @@ $('#searchInput').addEventListener('input', e=>{
 async function runSearch(q){
   if(!q){ $('#grid').innerHTML=''; state.items=[]; $('#status').textContent='Type to search.'; return; }
   state.items=[]; state.done=true; $('#grid').innerHTML=''; $('#status').textContent='Searching…';
-  try{
-    const data = await getJSON('/api/search_semantic?q='+encodeURIComponent(q)+'&top_k=120');
-    state.items.push(...data.items); appendTiles(data.items);
-    $('#status').textContent = data.items.length? data.items.length+' results (smart search)' : 'No matches.';
-  }catch(e){
+  // Only attempt smart (CLIP) search when the index is built; otherwise go
+  // straight to filename match (avoids a guaranteed 503).
+  if(CLIP_OK){
     try{
-      const data = await getJSON('/api/media?q='+encodeURIComponent(q)+'&per_page=120');
+      const data = await getJSON('/api/search_semantic?q='+encodeURIComponent(q)+'&top_k=120');
       state.items.push(...data.items); appendTiles(data.items);
-      const note = e.status===503? ' (filename match — run clip_indexer.py for smart search)':'';
-      $('#status').textContent = (data.items.length? data.items.length+' results':'No matches')+note;
-    }catch(e2){ $('#status').textContent='Search failed.'; }
+      $('#status').textContent = data.items.length? data.items.length+' results (smart search)' : 'No matches.';
+      return;
+    }catch(e){ /* fall through to filename search */ }
   }
+  try{
+    const data = await getJSON('/api/media?q='+encodeURIComponent(q)+'&per_page=120');
+    state.items.push(...data.items); appendTiles(data.items);
+    const note = CLIP_OK? '' : ' (filename match — build the CLIP index for smart search)';
+    $('#status').textContent = (data.items.length? data.items.length+' results':'No matches')+note;
+  }catch(e2){ $('#status').textContent='Search failed.'; }
 }
 
 // ---------- Viewer ----------
@@ -406,6 +418,7 @@ async function refreshHealth(){
   try{
     const h = await getJSON('/api/health');
     $('#count').textContent = h.items_indexed+' items';
+    CLIP_OK = (h.clip_indexed||0) > 0;
     const s = h.scan||{};
     $('#scan').textContent = s.running? `scanning ${s.scanned||0}/${s.total_seen||0}` : 'idle';
     return s.running;
