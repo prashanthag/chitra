@@ -141,8 +141,11 @@ def init_db() -> None:
     _add_column_if_missing(conn, "media", "lng REAL")
     _add_column_if_missing(conn, "media", "share_token TEXT")
     _add_column_if_missing(conn, "media", "edit_version INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "media", "camera_make TEXT")
+    _add_column_if_missing(conn, "media", "camera_model TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_latlng ON media(lat, lng)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_camera ON media(camera_model)")
     conn.commit()
     conn.close()
 
@@ -177,8 +180,18 @@ def _dms_to_dd(dms, ref) -> float | None:
         return None
 
 
+def _clean_exif_str(v) -> str | None:
+    """Normalize an EXIF string tag: bytes->str, trim, drop NULs/empties."""
+    if v is None:
+        return None
+    if isinstance(v, bytes):
+        v = v.decode("utf-8", "ignore")
+    v = str(v).replace("\x00", "").strip()
+    return v or None
+
+
 def extract_exif(path: Path, kind: str) -> dict:
-    """Returns {taken_at, lat, lng}, all optional."""
+    """Returns {taken_at, lat, lng, make, model}, all optional."""
     out: dict = {}
     if kind == "photo":
         try:
@@ -190,6 +203,12 @@ def extract_exif(path: Path, kind: str) -> dict:
                         out["taken_at"] = time.mktime(time.strptime(dt, "%Y:%m:%d %H:%M:%S"))
                     except Exception:
                         pass
+                make = _clean_exif_str(exif.get(271))   # Make, e.g. "Apple", "Canon"
+                model = _clean_exif_str(exif.get(272))  # Model, e.g. "iPhone 14 Pro"
+                if make:
+                    out["make"] = make
+                if model:
+                    out["model"] = model
                 gps_ifd = exif.get_ifd(34853) if hasattr(exif, "get_ifd") else None
                 if gps_ifd:
                     # tag IDs: 1=LatRef, 2=Lat, 3=LngRef, 4=Lng
@@ -249,8 +268,9 @@ def scan_once() -> None:
             return
         cur.executemany(
             """INSERT OR REPLACE INTO media
-               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng,
+                camera_make, camera_model)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             batch,
         )
         conn.commit()
@@ -285,6 +305,8 @@ def scan_once() -> None:
             taken = exif.get("taken_at")
             lat = exif.get("lat")
             lng = exif.get("lng")
+            cam_make = exif.get("make")
+            cam_model = exif.get("model")
             width = height = None
             if kind == "photo":
                 try:
@@ -308,6 +330,8 @@ def scan_once() -> None:
                     album,
                     lat,
                     lng,
+                    cam_make,
+                    cam_model,
                 )
             )
             _scan_state["scanned"] += 1
@@ -565,6 +589,7 @@ def list_media():
     per_page = min(200, max(1, int(request.args.get("per_page", 60))))
     kind = request.args.get("kind")
     album = request.args.get("album")
+    camera = request.args.get("camera")
     q = request.args.get("q")
     favorites_only = request.args.get("favorites") in ("1", "true")
     year = request.args.get("year")
@@ -593,6 +618,10 @@ def list_media():
     if album:
         where.append("m.album = ?")
         args.append(album)
+    if camera:
+        # Match by model when set, else by make (the friendly label can be either).
+        where.append("COALESCE(m.camera_model, m.camera_make) = ?")
+        args.append(camera)
     if favorites_only:
         where.append("f.media_id IS NOT NULL")
     if q:
@@ -847,7 +876,8 @@ def upload_media():
         mime = mimetypes.guess_type(safe_name)[0]
         rel = dest.relative_to(MEDIA_ROOT)
         album = rel.parts[0] if len(rel.parts) > 1 else "_root"
-        taken = extract_taken_at(dest, kind)
+        exif = extract_exif(dest, kind)
+        taken = exif.get("taken_at")
         width = height = None
         if kind == "photo":
             try:
@@ -857,11 +887,13 @@ def upload_media():
                 pass
         db().execute(
             """INSERT OR REPLACE INTO media
-               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album,
+                lat, lng, camera_make, camera_model)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 mid, str(dest), safe_name, kind, ext, mime,
                 st.st_size, st.st_mtime, taken, width, height, album,
+                exif.get("lat"), exif.get("lng"), exif.get("make"), exif.get("model"),
             ),
         )
         db().commit()
@@ -1137,6 +1169,51 @@ def list_albums():
            GROUP BY m.album ORDER BY m.album"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/cameras")
+def list_cameras():
+    """Group library by the device that took each photo (EXIF make/model),
+    so the UI can categorize by iPhone / Galaxy / Canon / etc."""
+    rows = db().execute(
+        """SELECT camera_make AS make,
+                  camera_model AS model,
+                  COUNT(*) AS count,
+                  (SELECT id FROM media m2
+                   WHERE COALESCE(m2.camera_model, m2.camera_make)
+                         = COALESCE(media.camera_model, media.camera_make)
+                     AND m2.trashed_at IS NULL
+                   ORDER BY COALESCE(m2.taken_at, m2.mtime) DESC LIMIT 1) AS cover
+           FROM media
+           WHERE camera_model IS NOT NULL OR camera_make IS NOT NULL
+           GROUP BY COALESCE(camera_model, camera_make)
+           ORDER BY count DESC"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        # key is what the client passes back as ?camera=… ; label is friendly.
+        d["key"] = d["model"] or d["make"]
+        d["label"] = _camera_label(d["make"], d["model"])
+        out.append(d)
+    return jsonify(out)
+
+
+# Map common EXIF make/model strings to a friendly device family name.
+def _camera_label(make: str | None, model: str | None) -> str:
+    make_l = (make or "").lower()
+    model = model or ""
+    model_l = model.lower()
+    if "apple" in make_l or model_l.startswith("iphone") or model_l.startswith("ipad"):
+        return model or "iPhone"
+    if "samsung" in make_l:
+        return f"Samsung Galaxy ({model})" if model else "Samsung Galaxy"
+    if "google" in make_l or model_l.startswith("pixel"):
+        return model or "Google Pixel"
+    if make and model:
+        # Avoid "Canon Canon EOS…" duplication.
+        return model if model_l.startswith(make_l) else f"{make} {model}"
+    return model or make or "Unknown device"
 
 
 @app.get("/api/media/<mid>")

@@ -126,6 +126,7 @@
     <div class="label">Library</div>
     <div class="item" data-view="people"><span class="ic">☺</span> People</div>
     <div class="item" data-view="albums"><span class="ic">▤</span> Albums</div>
+    <div class="item" data-view="cameras"><span class="ic">▣</span> Cameras</div>
     <div class="item" data-view="videos"><span class="ic">▷</span> Videos</div>
     <div class="sep"></div>
     <div class="item" data-view="trash"><span class="ic">🗑</span> Trash</div>
@@ -196,6 +197,7 @@ function switchView(view, params){
   $('#status').textContent='';
   if(view==='people'){ loadPeople(); return; }
   if(view==='albums'){ loadAlbums(); return; }
+  if(view==='cameras'){ loadCameras(); return; }
   if(view==='search'){ $('#status').textContent='Type to search.'; $('#searchInput').focus(); return; }
   loadGrid(true);
 }
@@ -297,6 +299,24 @@ async function loadAlbums(){
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
     el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
   $('#status').textContent = albums.length? '' : 'No albums.';
+}
+
+// ---------- Cameras / Devices ----------
+async function loadCameras(){
+  $('#grid').style.display='none'; $('#cards').style.display='grid'; $('#status').textContent='Loading devices…';
+  let cams=[];
+  try{ cams = await getJSON('/api/cameras'); }catch(e){}
+  $('#cards').innerHTML = cams.map(c=>{
+    const cover = c.cover
+      ? `<img class="sq" loading="lazy" src="/api/media/${c.cover}/thumb"/>`
+      : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▣</div>`;
+    return `<div class="card" data-cam="${esc(c.key)}" data-label="${esc(c.label)}">
+      ${cover}<div class="nm">${esc(c.label)}</div><div class="ct">${c.count} photos</div></div>`;
+  }).join('');
+  $('#cards').querySelectorAll('[data-cam]').forEach(el=>
+    el.addEventListener('click', ()=> switchView('photos', {camera: el.dataset.cam})));
+  $('#status').textContent = cams.length? '' :
+    'No camera info found. Devices come from photo EXIF (make/model).';
 }
 
 // Show an arbitrary list of items (person / cluster results) as a grid

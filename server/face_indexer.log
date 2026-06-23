@@ -1,189 +1,150 @@
-/home/ina/work/chitra/server/.venv/lib/python3.13/site-packages/insightface/utils/face_align.py:23: FutureWarning: `estimate` is deprecated since version 0.26 and will be removed in version 2.2. Please use `SimilarityTransform.from_estimate` class constructor instead.
+/Users/mac/work/apps/chitra/server/.venv/lib/python3.13/site-packages/insightface/utils/face_align.py:23: FutureWarning: `estimate` is deprecated since version 0.26 and will be removed in version 2.2. Please use `SimilarityTransform.from_estimate` class constructor instead.
   tform.estimate(lmk, dst)
 [init] loading face model (insightface buffalo_l)...
-Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}
-find model: /home/ina/.insightface/models/buffalo_l/1k3d68.onnx landmark_3d_68 ['None', 3, 192, 192] 0.0 1.0
-Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}
-find model: /home/ina/.insightface/models/buffalo_l/2d106det.onnx landmark_2d_106 ['None', 3, 192, 192] 0.0 1.0
-Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}
-find model: /home/ina/.insightface/models/buffalo_l/det_10g.onnx detection [1, 3, '?', '?'] 127.5 128.0
-Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}
-find model: /home/ina/.insightface/models/buffalo_l/genderage.onnx genderage ['None', 3, 96, 96] 0.0 1.0
-Applied providers: ['CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}}
-find model: /home/ina/.insightface/models/buffalo_l/w600k_r50.onnx recognition ['None', 3, 112, 112] 127.5 127.5
+[init] onnxruntime providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'] (ctx_id=0)
+Applied providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}, 'CoreMLExecutionProvider': {}}
+find model: /Users/mac/.insightface/models/buffalo_l/1k3d68.onnx landmark_3d_68 ['None', 3, 192, 192] 0.0 1.0
+Applied providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}, 'CoreMLExecutionProvider': {}}
+find model: /Users/mac/.insightface/models/buffalo_l/2d106det.onnx landmark_2d_106 ['None', 3, 192, 192] 0.0 1.0
+Applied providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}, 'CoreMLExecutionProvider': {}}
+find model: /Users/mac/.insightface/models/buffalo_l/det_10g.onnx detection [1, 3, '?', '?'] 127.5 128.0
+Applied providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}, 'CoreMLExecutionProvider': {}}
+find model: /Users/mac/.insightface/models/buffalo_l/genderage.onnx genderage ['None', 3, 96, 96] 0.0 1.0
+Applied providers: ['CoreMLExecutionProvider', 'CPUExecutionProvider'], with options: {'CPUExecutionProvider': {}, 'CoreMLExecutionProvider': {}}
+find model: /Users/mac/.insightface/models/buffalo_l/w600k_r50.onnx recognition ['None', 3, 112, 112] 127.5 127.5
 set det-size: (640, 640)
-[faces] 3432 unprocessed photos
-[faces] 20/3432  faces=11  rate=2.4/s  eta=23.4m
-[faces] 40/3432  faces=19  rate=2.5/s  eta=22.6m
-[faces] 60/3432  faces=26  rate=2.5/s  eta=22.3m
-[faces] 80/3432  faces=29  rate=2.6/s  eta=21.7m
-[faces] 100/3432  faces=37  rate=2.6/s  eta=21.8m
-[faces] 120/3432  faces=48  rate=2.5/s  eta=21.9m
-[faces] 140/3432  faces=57  rate=2.5/s  eta=21.9m
-[faces] 160/3432  faces=72  rate=2.5/s  eta=22.1m
-[faces] 180/3432  faces=80  rate=2.5/s  eta=22.0m
-[faces] 200/3432  faces=93  rate=2.5/s  eta=22.0m
-[faces] 220/3432  faces=101  rate=2.5/s  eta=21.8m
-[faces] 240/3432  faces=108  rate=2.5/s  eta=21.7m
-[faces] 260/3432  faces=117  rate=2.5/s  eta=21.5m
-[faces] 280/3432  faces=130  rate=2.5/s  eta=21.4m
-[faces] 300/3432  faces=141  rate=2.4/s  eta=21.3m
-[faces] 320/3432  faces=149  rate=2.4/s  eta=21.2m
-[faces] 340/3432  faces=156  rate=2.4/s  eta=21.1m
-[faces] 360/3432  faces=161  rate=2.4/s  eta=21.0m
-[faces] 380/3432  faces=166  rate=2.4/s  eta=20.9m
-[faces] 400/3432  faces=174  rate=2.4/s  eta=20.8m
-[faces] 420/3432  faces=184  rate=2.4/s  eta=20.6m
-[faces] 440/3432  faces=192  rate=2.4/s  eta=20.5m
-[faces] 460/3432  faces=201  rate=2.4/s  eta=20.4m
-[faces] 480/3432  faces=216  rate=2.4/s  eta=20.4m
-[faces] 500/3432  faces=228  rate=2.4/s  eta=20.3m
-[faces] 520/3432  faces=240  rate=2.4/s  eta=20.2m
-[faces] 540/3432  faces=253  rate=2.4/s  eta=20.1m
-[faces] 560/3432  faces=261  rate=2.4/s  eta=19.9m
-[faces] 580/3432  faces=270  rate=2.4/s  eta=19.8m
-[faces] 600/3432  faces=279  rate=2.4/s  eta=19.6m
-[faces] 620/3432  faces=289  rate=2.4/s  eta=19.5m
-[faces] 640/3432  faces=292  rate=2.4/s  eta=19.3m
-[faces] 660/3432  faces=304  rate=2.4/s  eta=19.2m
-[faces] 680/3432  faces=310  rate=2.4/s  eta=19.1m
-[faces] 700/3432  faces=320  rate=2.4/s  eta=19.0m
-[faces] 720/3432  faces=328  rate=2.4/s  eta=18.8m
-[faces] 740/3432  faces=343  rate=2.4/s  eta=18.7m
-[faces] 760/3432  faces=347  rate=2.4/s  eta=18.6m
-[faces] 780/3432  faces=352  rate=2.4/s  eta=18.4m
-[faces] 800/3432  faces=363  rate=2.4/s  eta=18.3m
-[faces] 820/3432  faces=370  rate=2.4/s  eta=18.1m
-[faces] 840/3432  faces=375  rate=2.4/s  eta=18.0m
-[faces] 860/3432  faces=380  rate=2.4/s  eta=17.8m
-[faces] 880/3432  faces=387  rate=2.4/s  eta=17.7m
-[faces] 900/3432  faces=396  rate=2.4/s  eta=17.5m
-[faces] 920/3432  faces=408  rate=2.4/s  eta=17.5m
-[faces] 940/3432  faces=412  rate=2.4/s  eta=17.3m
-[faces] 960/3432  faces=422  rate=2.4/s  eta=17.2m
-[faces] 980/3432  faces=428  rate=2.4/s  eta=17.1m
-[faces] 1000/3432  faces=434  rate=2.4/s  eta=16.9m
-[faces] 1020/3432  faces=439  rate=2.4/s  eta=16.8m
-[faces] 1040/3432  faces=445  rate=2.4/s  eta=16.6m
-[faces] 1060/3432  faces=454  rate=2.4/s  eta=16.5m
-[faces] 1080/3432  faces=463  rate=2.4/s  eta=16.4m
-[faces] 1100/3432  faces=476  rate=2.4/s  eta=16.2m
-[faces] 1120/3432  faces=479  rate=2.4/s  eta=16.1m
-[faces] 1140/3432  faces=481  rate=2.4/s  eta=15.9m
-[faces] 1160/3432  faces=491  rate=2.4/s  eta=15.8m
-[faces] 1180/3432  faces=498  rate=2.4/s  eta=15.6m
-[faces] 1200/3432  faces=512  rate=2.4/s  eta=15.5m
-[faces] 1220/3432  faces=519  rate=2.4/s  eta=15.4m
-[faces] 1240/3432  faces=523  rate=2.4/s  eta=15.2m
-[faces] 1260/3432  faces=534  rate=2.4/s  eta=15.1m
-[faces] 1280/3432  faces=542  rate=2.4/s  eta=14.9m
-[faces] 1300/3432  faces=549  rate=2.4/s  eta=14.8m
-[faces] 1320/3432  faces=558  rate=2.4/s  eta=14.7m
-[faces] 1340/3432  faces=566  rate=2.4/s  eta=14.5m
-[faces] 1360/3432  faces=577  rate=2.4/s  eta=14.4m
-[faces] 1380/3432  faces=588  rate=2.4/s  eta=14.2m
-[faces] 1400/3432  faces=597  rate=2.4/s  eta=14.1m
-[faces] 1420/3432  faces=606  rate=2.4/s  eta=14.0m
-[faces] 1440/3432  faces=612  rate=2.4/s  eta=13.8m
-[faces] 1460/3432  faces=617  rate=2.4/s  eta=13.7m
-[faces] 1480/3432  faces=623  rate=2.4/s  eta=13.5m
-[faces] 1500/3432  faces=629  rate=2.4/s  eta=13.4m
-[faces] 1520/3432  faces=639  rate=2.4/s  eta=13.3m
-[faces] 1540/3432  faces=644  rate=2.4/s  eta=13.1m
-[faces] 1560/3432  faces=653  rate=2.4/s  eta=13.0m
-[faces] 1580/3432  faces=658  rate=2.4/s  eta=12.8m
-[faces] 1600/3432  faces=668  rate=2.4/s  eta=12.7m
-[faces] 1620/3432  faces=677  rate=2.4/s  eta=12.5m
-[faces] 1640/3432  faces=685  rate=2.4/s  eta=12.4m
-[faces] 1660/3432  faces=694  rate=2.4/s  eta=12.3m
-[faces] 1680/3432  faces=703  rate=2.4/s  eta=12.1m
-[faces] 1700/3432  faces=710  rate=2.4/s  eta=12.0m
-[faces] 1720/3432  faces=722  rate=2.4/s  eta=11.9m
-[faces] 1740/3432  faces=732  rate=2.4/s  eta=11.7m
-[faces] 1760/3432  faces=739  rate=2.4/s  eta=11.6m
-[faces] 1780/3432  faces=743  rate=2.4/s  eta=11.4m
-[faces] 1800/3432  faces=752  rate=2.4/s  eta=11.3m
-[faces] 1820/3432  faces=763  rate=2.4/s  eta=11.1m
-[faces] 1840/3432  faces=778  rate=2.4/s  eta=11.0m
-[faces] 1860/3432  faces=788  rate=2.4/s  eta=10.9m
-[faces] 1880/3432  faces=797  rate=2.4/s  eta=10.7m
-[faces] 1900/3432  faces=808  rate=2.4/s  eta=10.6m
-[faces] 1920/3432  faces=819  rate=2.4/s  eta=10.5m
-[faces] 1940/3432  faces=825  rate=2.4/s  eta=10.3m
-[faces] 1960/3432  faces=834  rate=2.4/s  eta=10.2m
-[faces] 1980/3432  faces=842  rate=2.4/s  eta=10.0m
-[faces] 2000/3432  faces=854  rate=2.4/s  eta=9.9m
-[faces] 2020/3432  faces=862  rate=2.4/s  eta=9.8m
-[faces] 2040/3432  faces=862  rate=2.4/s  eta=9.5m
-[faces] 2060/3432  faces=862  rate=2.4/s  eta=9.3m
-[faces] 2080/3432  faces=863  rate=2.5/s  eta=9.1m
-[faces] 2100/3432  faces=866  rate=2.5/s  eta=8.9m
-[faces] 2120/3432  faces=867  rate=2.5/s  eta=8.7m
-[faces] 2140/3432  faces=879  rate=2.5/s  eta=8.6m
-[faces] 2160/3432  faces=894  rate=2.5/s  eta=8.4m
-[faces] 2180/3432  faces=910  rate=2.5/s  eta=8.2m
-[faces] 2200/3432  faces=928  rate=2.5/s  eta=8.1m
-[faces] 2220/3432  faces=950  rate=2.5/s  eta=8.0m
-[faces] 2240/3432  faces=979  rate=2.5/s  eta=7.8m
-[faces] 2260/3432  faces=1007  rate=2.5/s  eta=7.7m
-[faces] 2280/3432  faces=1030  rate=2.5/s  eta=7.6m
-[faces] 2300/3432  faces=1052  rate=2.5/s  eta=7.5m
-[faces] 2320/3432  faces=1074  rate=2.5/s  eta=7.4m
-[faces] 2340/3432  faces=1105  rate=2.5/s  eta=7.2m
-[faces] 2360/3432  faces=1136  rate=2.5/s  eta=7.1m
-[faces] 2380/3432  faces=1164  rate=2.5/s  eta=7.0m
-[faces] 2400/3432  faces=1191  rate=2.5/s  eta=6.9m
-[faces] 2420/3432  faces=1228  rate=2.5/s  eta=6.8m
-[faces] 2440/3432  faces=1255  rate=2.5/s  eta=6.7m
-[faces] 2460/3432  faces=1293  rate=2.5/s  eta=6.5m
-[faces] 2480/3432  faces=1312  rate=2.5/s  eta=6.4m
-[faces] 2500/3432  faces=1338  rate=2.5/s  eta=6.2m
-[faces] 2520/3432  faces=1367  rate=2.5/s  eta=6.1m
-[faces] 2540/3432  faces=1382  rate=2.5/s  eta=5.9m
-[faces] 2560/3432  faces=1405  rate=2.5/s  eta=5.8m
-[faces] 2580/3432  faces=1423  rate=2.5/s  eta=5.6m
-[faces] 2600/3432  faces=1441  rate=2.5/s  eta=5.5m
-[faces] 2620/3432  faces=1465  rate=2.5/s  eta=5.3m
-[faces] 2640/3432  faces=1484  rate=2.6/s  eta=5.2m
-[faces] 2660/3432  faces=1499  rate=2.6/s  eta=5.0m
-[faces] 2680/3432  faces=1518  rate=2.6/s  eta=4.9m
-[faces] 2700/3432  faces=1539  rate=2.6/s  eta=4.7m
-[faces] 2720/3432  faces=1560  rate=2.6/s  eta=4.6m
-[faces] 2740/3432  faces=1582  rate=2.6/s  eta=4.5m
-[faces] 2760/3432  faces=1600  rate=2.6/s  eta=4.3m
-[faces] 2780/3432  faces=1613  rate=2.6/s  eta=4.2m
-[faces] 2800/3432  faces=1642  rate=2.6/s  eta=4.0m
-[faces] 2820/3432  faces=1664  rate=2.6/s  eta=3.9m
-[faces] 2840/3432  faces=1676  rate=2.6/s  eta=3.8m
-[faces] 2860/3432  faces=1698  rate=2.6/s  eta=3.6m
-[faces] 2880/3432  faces=1717  rate=2.6/s  eta=3.5m
-[faces] 2900/3432  faces=1742  rate=2.6/s  eta=3.4m
-[faces] 2920/3432  faces=1766  rate=2.7/s  eta=3.2m
-[faces] 2940/3432  faces=1795  rate=2.7/s  eta=3.1m
-[faces] 2960/3432  faces=1806  rate=2.7/s  eta=2.9m
-[faces] 2980/3432  faces=1823  rate=2.7/s  eta=2.8m
-[faces] 3000/3432  faces=1852  rate=2.7/s  eta=2.7m
-[faces] 3020/3432  faces=1876  rate=2.7/s  eta=2.6m
-[faces] 3040/3432  faces=1890  rate=2.7/s  eta=2.4m
-[faces] 3060/3432  faces=1917  rate=2.7/s  eta=2.3m
-[faces] 3080/3432  faces=1938  rate=2.7/s  eta=2.2m
-[faces] 3100/3432  faces=1955  rate=2.7/s  eta=2.0m
-[faces] 3120/3432  faces=1979  rate=2.7/s  eta=1.9m
-[faces] 3140/3432  faces=2006  rate=2.7/s  eta=1.8m
-[faces] 3160/3432  faces=2026  rate=2.7/s  eta=1.7m
-[faces] 3180/3432  faces=2049  rate=2.7/s  eta=1.5m
-[faces] 3200/3432  faces=2070  rate=2.8/s  eta=1.4m
-[faces] 3220/3432  faces=2095  rate=2.8/s  eta=1.3m
-[faces] 3240/3432  faces=2120  rate=2.8/s  eta=1.2m
-[faces] 3260/3432  faces=2145  rate=2.8/s  eta=1.0m
-[faces] 3280/3432  faces=2164  rate=2.8/s  eta=0.9m
-[faces] 3300/3432  faces=2187  rate=2.8/s  eta=0.8m
-[faces] 3320/3432  faces=2212  rate=2.8/s  eta=0.7m
-[faces] 3340/3432  faces=2241  rate=2.8/s  eta=0.5m
-[faces] 3360/3432  faces=2262  rate=2.8/s  eta=0.4m
-[faces] 3380/3432  faces=2288  rate=2.8/s  eta=0.3m
-[faces] 3400/3432  faces=2303  rate=2.8/s  eta=0.2m
-[faces] 3420/3432  faces=2329  rate=2.8/s  eta=0.1m
-[faces] done. processed=3432 inserted_faces=2345
-[cluster] running DBSCAN on 2349 embeddings (eps=0.45)...
-[cluster] 94 clusters, 200 unclustered
+[faces] 2625 unprocessed photos
+[faces] 20/2625  faces=27  rate=6.1/s  eta=7.1m
+[faces] 40/2625  faces=33  rate=6.4/s  eta=6.7m
+[faces] 60/2625  faces=52  rate=6.4/s  eta=6.6m
+[faces] 80/2625  faces=82  rate=6.3/s  eta=6.7m
+[faces] 100/2625  faces=105  rate=6.4/s  eta=6.6m
+[faces] 120/2625  faces=123  rate=6.5/s  eta=6.5m
+[faces] 140/2625  faces=144  rate=6.5/s  eta=6.4m
+[faces] 160/2625  faces=170  rate=6.5/s  eta=6.4m
+[faces] 180/2625  faces=189  rate=6.9/s  eta=5.9m
+[faces] 200/2625  faces=210  rate=7.5/s  eta=5.4m
+[faces] 220/2625  faces=230  rate=8.0/s  eta=5.0m
+[faces] 240/2625  faces=249  rate=8.4/s  eta=4.7m
+[faces] 260/2625  faces=272  rate=8.9/s  eta=4.4m
+[faces] 280/2625  faces=297  rate=9.3/s  eta=4.2m
+[faces] 300/2625  faces=320  rate=9.7/s  eta=4.0m
+[faces] 320/2625  faces=337  rate=10.0/s  eta=3.8m
+[faces] 340/2625  faces=358  rate=10.4/s  eta=3.7m
+[faces] 360/2625  faces=379  rate=10.7/s  eta=3.5m
+[faces] 380/2625  faces=398  rate=11.0/s  eta=3.4m
+[faces] 400/2625  faces=421  rate=11.3/s  eta=3.3m
+[faces] 420/2625  faces=445  rate=11.6/s  eta=3.2m
+[faces] 440/2625  faces=463  rate=11.9/s  eta=3.1m
+[faces] 460/2625  faces=478  rate=12.2/s  eta=3.0m
+[faces] 480/2625  faces=500  rate=12.4/s  eta=2.9m
+[faces] 500/2625  faces=516  rate=12.7/s  eta=2.8m
+[faces] 520/2625  faces=535  rate=13.0/s  eta=2.7m
+[faces] 540/2625  faces=555  rate=13.2/s  eta=2.6m
+[faces] 560/2625  faces=573  rate=13.5/s  eta=2.6m
+[faces] 580/2625  faces=600  rate=13.7/s  eta=2.5m
+[faces] 600/2625  faces=628  rate=13.9/s  eta=2.4m
+[faces] 620/2625  faces=651  rate=14.1/s  eta=2.4m
+[faces] 640/2625  faces=667  rate=14.4/s  eta=2.3m
+[faces] 660/2625  faces=690  rate=14.6/s  eta=2.2m
+[faces] 680/2625  faces=714  rate=14.8/s  eta=2.2m
+[faces] 700/2625  faces=740  rate=15.0/s  eta=2.1m
+[faces] 720/2625  faces=754  rate=15.2/s  eta=2.1m
+[faces] 740/2625  faces=802  rate=15.3/s  eta=2.1m
+[faces] 760/2625  faces=817  rate=15.4/s  eta=2.0m
+[faces] 780/2625  faces=839  rate=15.6/s  eta=2.0m
+[faces] 800/2625  faces=850  rate=15.8/s  eta=1.9m
+[faces] 820/2625  faces=873  rate=15.9/s  eta=1.9m
+[faces] 840/2625  faces=884  rate=16.1/s  eta=1.8m
+[faces] 860/2625  faces=893  rate=16.3/s  eta=1.8m
+[faces] 880/2625  faces=921  rate=16.4/s  eta=1.8m
+[faces] 900/2625  faces=936  rate=16.6/s  eta=1.7m
+[faces] 920/2625  faces=965  rate=16.7/s  eta=1.7m
+[faces] 940/2625  faces=989  rate=16.8/s  eta=1.7m
+[faces] 960/2625  faces=1011  rate=17.0/s  eta=1.6m
+[faces] 980/2625  faces=1030  rate=17.1/s  eta=1.6m
+[faces] 1000/2625  faces=1040  rate=17.2/s  eta=1.6m
+[faces] 1020/2625  faces=1059  rate=17.4/s  eta=1.5m
+[faces] 1040/2625  faces=1077  rate=17.5/s  eta=1.5m
+[faces] 1060/2625  faces=1095  rate=17.6/s  eta=1.5m
+[faces] 1080/2625  faces=1117  rate=17.7/s  eta=1.5m
+[faces] 1100/2625  faces=1130  rate=17.8/s  eta=1.4m
+[faces] 1120/2625  faces=1149  rate=18.0/s  eta=1.4m
+[faces] 1140/2625  faces=1167  rate=18.1/s  eta=1.4m
+[faces] 1160/2625  faces=1190  rate=18.2/s  eta=1.3m
+[faces] 1180/2625  faces=1212  rate=18.3/s  eta=1.3m
+[faces] 1200/2625  faces=1226  rate=18.4/s  eta=1.3m
+[faces] 1220/2625  faces=1248  rate=18.5/s  eta=1.3m
+[faces] 1240/2625  faces=1287  rate=18.5/s  eta=1.2m
+[faces] 1260/2625  faces=1301  rate=18.6/s  eta=1.2m
+[faces] 1280/2625  faces=1316  rate=18.7/s  eta=1.2m
+[faces] 1300/2625  faces=1333  rate=18.8/s  eta=1.2m
+[faces] 1320/2625  faces=1358  rate=18.9/s  eta=1.2m
+[faces] 1340/2625  faces=1371  rate=19.0/s  eta=1.1m
+[faces] 1360/2625  faces=1375  rate=19.1/s  eta=1.1m
+[faces] 1380/2625  faces=1391  rate=19.2/s  eta=1.1m
+[faces] 1400/2625  faces=1417  rate=19.2/s  eta=1.1m
+[faces] 1420/2625  faces=1433  rate=19.3/s  eta=1.0m
+[faces] 1440/2625  faces=1452  rate=19.4/s  eta=1.0m
+[faces] 1460/2625  faces=1468  rate=19.5/s  eta=1.0m
+[faces] 1480/2625  faces=1493  rate=19.5/s  eta=1.0m
+[faces] 1500/2625  faces=1504  rate=19.6/s  eta=1.0m
+[faces] 1520/2625  faces=1519  rate=19.7/s  eta=0.9m
+[faces] 1540/2625  faces=1524  rate=19.8/s  eta=0.9m
+[faces] 1560/2625  faces=1533  rate=19.8/s  eta=0.9m
+[faces] 1580/2625  faces=1547  rate=19.9/s  eta=0.9m
+[faces] 1600/2625  faces=1565  rate=20.0/s  eta=0.9m
+[faces] 1620/2625  faces=1588  rate=20.0/s  eta=0.8m
+[faces] 1640/2625  faces=1609  rate=20.1/s  eta=0.8m
+[faces] 1660/2625  faces=1630  rate=20.0/s  eta=0.8m
+[faces] 1680/2625  faces=1654  rate=20.0/s  eta=0.8m
+[faces] 1700/2625  faces=1678  rate=20.1/s  eta=0.8m
+[faces] 1720/2625  faces=1695  rate=20.1/s  eta=0.7m
+[faces] 1740/2625  faces=1717  rate=20.2/s  eta=0.7m
+[faces] 1760/2625  faces=1744  rate=20.2/s  eta=0.7m
+[faces] 1780/2625  faces=1767  rate=20.3/s  eta=0.7m
+[faces] 1800/2625  faces=1783  rate=20.3/s  eta=0.7m
+[faces] 1820/2625  faces=1806  rate=20.4/s  eta=0.7m
+[faces] 1840/2625  faces=1829  rate=20.4/s  eta=0.6m
+[faces] 1860/2625  faces=1850  rate=20.5/s  eta=0.6m
+[faces] 1880/2625  faces=1873  rate=20.5/s  eta=0.6m
+[faces] 1900/2625  faces=1897  rate=20.5/s  eta=0.6m
+[faces] 1920/2625  faces=1916  rate=20.6/s  eta=0.6m
+[faces] 1940/2625  faces=1949  rate=20.6/s  eta=0.6m
+[faces] 1960/2625  faces=1970  rate=20.6/s  eta=0.5m
+[faces] 1980/2625  faces=1995  rate=20.7/s  eta=0.5m
+[faces] 2000/2625  faces=2013  rate=20.7/s  eta=0.5m
+[faces] 2020/2625  faces=2026  rate=20.8/s  eta=0.5m
+[faces] 2040/2625  faces=2043  rate=20.8/s  eta=0.5m
+[faces] 2060/2625  faces=2065  rate=20.8/s  eta=0.5m
+[faces] 2080/2625  faces=2089  rate=20.8/s  eta=0.4m
+[faces] 2100/2625  faces=2109  rate=20.8/s  eta=0.4m
+[faces] 2120/2625  faces=2126  rate=20.8/s  eta=0.4m
+[faces] 2140/2625  faces=2144  rate=20.8/s  eta=0.4m
+[faces] 2160/2625  faces=2168  rate=20.8/s  eta=0.4m
+[faces] 2180/2625  faces=2186  rate=20.9/s  eta=0.4m
+[faces] 2200/2625  faces=2216  rate=20.9/s  eta=0.3m
+[faces] 2220/2625  faces=2234  rate=20.9/s  eta=0.3m
+[faces] 2240/2625  faces=2260  rate=20.9/s  eta=0.3m
+[faces] 2260/2625  faces=2273  rate=20.9/s  eta=0.3m
+[faces] 2280/2625  faces=2295  rate=21.0/s  eta=0.3m
+[faces] 2300/2625  faces=2318  rate=20.6/s  eta=0.3m
+[faces] 2320/2625  faces=2345  rate=20.1/s  eta=0.3m
+[faces] 2340/2625  faces=2372  rate=19.7/s  eta=0.2m
+[faces] 2360/2625  faces=2393  rate=19.4/s  eta=0.2m
+[faces] 2380/2625  faces=2422  rate=19.0/s  eta=0.2m
+[faces] 2400/2625  faces=2446  rate=18.5/s  eta=0.2m
+[faces] 2420/2625  faces=2477  rate=18.1/s  eta=0.2m
+[faces] 2440/2625  faces=2502  rate=17.8/s  eta=0.2m
+[faces] 2460/2625  faces=2527  rate=17.5/s  eta=0.2m
+[faces] 2480/2625  faces=2560  rate=17.2/s  eta=0.1m
+[faces] 2500/2625  faces=2596  rate=16.8/s  eta=0.1m
+[faces] 2520/2625  faces=2618  rate=16.5/s  eta=0.1m
+[faces] 2540/2625  faces=2630  rate=16.5/s  eta=0.1m
+[faces] 2560/2625  faces=2647  rate=16.5/s  eta=0.1m
+[faces] 2580/2625  faces=2662  rate=16.4/s  eta=0.0m
+[faces] 2600/2625  faces=2686  rate=16.3/s  eta=0.0m
+[faces] 2620/2625  faces=2703  rate=16.2/s  eta=0.0m
+[faces] done. processed=2625 inserted_faces=2706
+[cluster] running DBSCAN on 1659 embeddings (score>=0.65, edge>=60, eps=0.45)...
+[cluster] 22 clusters, 97 unclustered
