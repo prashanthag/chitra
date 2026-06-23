@@ -20,6 +20,13 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
@@ -206,6 +213,25 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
     conn.commit()
 
 
+def _onnx_providers() -> tuple[list[str], int]:
+    """Pick the best onnxruntime execution providers for face detection.
+
+    Prefers NVIDIA CUDA, then Apple CoreML, then CPU. Returns (providers, ctx_id)
+    where ctx_id>=0 selects a GPU and -1 means CPU (per insightface convention).
+    """
+    try:
+        import onnxruntime as ort
+
+        available = set(ort.get_available_providers())
+    except Exception:
+        available = set()
+    if "CUDAExecutionProvider" in available:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"], 0
+    if "CoreMLExecutionProvider" in available:
+        return ["CoreMLExecutionProvider", "CPUExecutionProvider"], 0
+    return ["CPUExecutionProvider"], -1
+
+
 def main() -> None:
     if not DB_PATH.exists():
         print(f"index db not found: {DB_PATH}")
@@ -215,8 +241,10 @@ def main() -> None:
     ensure_schema(conn)
 
     print("[init] loading face model (insightface buffalo_l)...")
-    app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-    app.prepare(ctx_id=-1, det_size=(640, 640))
+    providers, ctx_id = _onnx_providers()
+    print(f"[init] onnxruntime providers: {providers} (ctx_id={ctx_id})")
+    app = FaceAnalysis(name="buffalo_l", providers=providers)
+    app.prepare(ctx_id=ctx_id, det_size=(640, 640))
 
     limit = int(os.environ.get("FACE_LIMIT", "0")) or None
     detect(app, conn, batch_limit=limit)

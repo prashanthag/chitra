@@ -15,6 +15,15 @@ import time
 from pathlib import Path
 from typing import Iterator
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
+import gpu
+
 from flask import (
     Flask,
     Response,
@@ -403,41 +412,34 @@ def make_photo_thumb(src: Path, dst: Path) -> bool:
         return False
 
 
-USE_CUDA = os.environ.get("USE_CUDA", "1") == "1"
+VIDEO_BACKEND = gpu.detect_backend()
 
 
-def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, cuda: bool) -> list[str]:
-    """Build ffmpeg cmd. With CUDA we decode on GPU, then download to CPU
-    (JPEG isn't an NVENC codec) and scale via the scale filter."""
-    if cuda:
-        return [
-            "ffmpeg", "-loglevel", "error",
-            "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
-            "-ss", seek, "-i", str(src),
-            "-frames:v", "1",
-            "-vf", f"scale_cuda='min({THUMB_SIZE},iw)':-2,hwdownload,format=nv12",
-            "-y", str(dst),
-        ]
+def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, backend: str) -> list[str]:
+    """Build ffmpeg cmd to grab one frame as a JPEG, hardware-decoding when the
+    backend supports it (the frame is downloaded to CPU before JPEG encode)."""
     return [
         "ffmpeg", "-loglevel", "error",
+        *gpu.thumb_decode_args(backend),
         "-ss", seek, "-i", str(src),
         "-frames:v", "1",
-        "-vf", f"scale='min({THUMB_SIZE},iw)':-2",
+        "-vf", gpu.thumb_scale_vf(backend, THUMB_SIZE),
         "-y", str(dst),
     ]
 
 
 def make_video_thumb(src: Path, dst: Path) -> bool:
-    """Extract a frame ~1s in. Tries CUDA-accelerated decode first, falls back to CPU."""
+    """Extract a frame ~1s in. Tries the detected GPU backend, falls back to CPU."""
+    backends = [VIDEO_BACKEND] + ([gpu.CPU] if VIDEO_BACKEND != gpu.CPU else [])
     for seek in ("1", "0"):
-        for cuda in ((True, False) if USE_CUDA else (False,)):
+        for backend in backends:
             try:
-                cmd = _ffmpeg_thumb_cmd(src, dst, seek, cuda)
+                cmd = _ffmpeg_thumb_cmd(src, dst, seek, backend)
                 r = subprocess.run(cmd, capture_output=True, timeout=30)
                 if r.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
                     return True
             except Exception as e:
-                print(f"[thumb] video {src} (cuda={cuda}): {e}")
+                print(f"[thumb] video {src} ({backend}): {e}")
     return False
 
 
@@ -703,7 +705,7 @@ def _load_clip_index():
         return False
     _clip_state["embs"] = np.stack(embs)
     _clip_state["ids"] = ids
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = gpu.torch_device(torch)
     model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
     model = model.to(device).eval()
     _clip_state["model"] = model
@@ -1123,7 +1125,8 @@ def media_thumb(mid: str):
 
 @app.get("/api/media/<mid>/stream.mp4")
 def media_stream_mp4(mid: str):
-    """Transcode any video to fragmented H.264 MP4 on the fly using NVENC.
+    """Transcode any video to fragmented H.264 MP4 on the fly, hardware-accelerated
+    via the detected GPU backend (NVENC / QSV / VideoToolbox / VAAPI), CPU otherwise.
     Lets Android play formats it doesn't natively support (e.g. some MKV/MOV codecs)."""
     r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
     if not r or r["kind"] != "video":
@@ -1131,13 +1134,12 @@ def media_stream_mp4(mid: str):
     src = Path(r["path"])
     if not src.exists():
         abort(404)
+    in_args, out_args = gpu.transcode_args(VIDEO_BACKEND)
     cmd = [
         "ffmpeg", "-loglevel", "error",
-        "-hwaccel", "cuda",
+        *in_args,
         "-i", str(src),
-        "-c:v", "h264_nvenc", "-preset", "p3", "-tune", "hq",
-        "-b:v", "4M", "-maxrate", "6M", "-bufsize", "8M",
-        "-pix_fmt", "yuv420p",
+        *out_args,
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "frag_keyframe+empty_moov+faststart",
         "-f", "mp4", "pipe:1",
@@ -1368,6 +1370,7 @@ def main() -> None:
     port = int(os.environ.get("PORT", 8000))
     print(f"[server] listening on http://{host}:{port}")
     print(f"[server] media root: {MEDIA_ROOT}")
+    print(f"[server] video backend: {gpu.describe(VIDEO_BACKEND)}")
     app.run(host=host, port=port, threaded=True)
 
 

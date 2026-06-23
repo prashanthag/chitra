@@ -3,94 +3,430 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Photos</title>
+<title>Chitra</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --bg:#0e0e10; --panel:#161619; --panel2:#1e1e22;
+          --line:#262629; --txt:#eee; --dim:#9a9aa2; --accent:#5b8cff; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, -apple-system, sans-serif;
-         background:#0e0e10; color:#eee; }
-  header { padding: 14px 18px; display:flex; align-items:center; gap:14px;
-           border-bottom:1px solid #222; position:sticky; top:0; background:#0e0e10; z-index:10; }
-  header h1 { font-size:18px; margin:0; }
-  .pill { background:#1e1e22; padding:4px 10px; border-radius:999px; font-size:12px; color:#aaa; }
-  #grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-          gap:4px; padding:4px; }
-  .tile { position:relative; aspect-ratio:1; background:#222; cursor:pointer; overflow:hidden; }
-  .tile img { width:100%; height:100%; object-fit:cover; display:block; }
-  .badge { position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,.6);
-           padding:2px 6px; border-radius:4px; font-size:11px; }
-  #viewer { position:fixed; inset:0; background:rgba(0,0,0,.95);
-            display:none; align-items:center; justify-content:center; z-index:100; }
-  #viewer.on { display:flex; }
-  #viewer img, #viewer video { max-width:96vw; max-height:92vh; }
-  #close { position:absolute; top:14px; right:18px; font-size:28px; cursor:pointer; }
-  #status { padding:14px; color:#888; font-size:13px; }
+  html,body { height:100%; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background:var(--bg); color:var(--txt); }
+  a { color:inherit; }
+
+  /* layout */
+  #app { display:grid; grid-template-columns: 220px 1fr; grid-template-rows: 56px 1fr;
+         grid-template-areas: "head head" "side main"; height:100vh; }
+  header { grid-area:head; display:flex; align-items:center; gap:14px; padding:0 18px;
+           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:30; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  header .grow { margin-left:auto; }
+  .pill { background:var(--panel2); padding:4px 10px; border-radius:999px; font-size:12px; color:var(--dim); }
+  .btn { background:var(--panel2); color:var(--txt); border:1px solid var(--line);
+         padding:7px 12px; border-radius:8px; cursor:pointer; font-size:13px; }
+  .btn:hover { border-color:#3a3a40; }
+  .btn.accent { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  nav { grid-area:side; border-right:1px solid var(--line); background:var(--panel);
+        padding:10px 8px; overflow:auto; }
+  nav .item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px;
+              cursor:pointer; color:var(--dim); font-size:14px; }
+  nav .item:hover { background:var(--panel2); color:var(--txt); }
+  nav .item.active { background:var(--panel2); color:var(--txt); font-weight:600; }
+  nav .item .ic { width:18px; text-align:center; }
+  nav .sep { height:1px; background:var(--line); margin:8px 6px; }
+  nav .label { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:#67676f; padding:8px 12px 4px; }
+
+  main { grid-area:main; overflow:auto; position:relative; }
+  #searchbar { display:none; padding:14px 18px 0; }
+  #searchbar.on { display:block; }
+  #searchbar input { width:100%; max-width:520px; background:var(--panel2); border:1px solid var(--line);
+        color:var(--txt); padding:10px 14px; border-radius:10px; font-size:14px; }
+  .crumb { padding:14px 18px 4px; color:var(--dim); font-size:13px; display:flex; align-items:center; gap:8px; }
+  .crumb b { color:var(--txt); }
+
+  #grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+          gap:4px; padding:8px; }
+  .tile { position:relative; aspect-ratio:1; background:var(--panel2); cursor:pointer;
+          overflow:hidden; border-radius:4px; }
+  .tile img { width:100%; height:100%; object-fit:cover; display:block; transition:transform .2s; }
+  .tile:hover img { transform:scale(1.04); }
+  .tile .badge { position:absolute; bottom:5px; right:5px; background:rgba(0,0,0,.65);
+          padding:2px 7px; border-radius:5px; font-size:11px; }
+  .tile .fav { position:absolute; top:5px; right:7px; font-size:14px; color:#ffd24a;
+          text-shadow:0 1px 3px #000; }
+
+  /* people / album cards */
+  #cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap:14px; padding:18px; }
+  .card { cursor:pointer; }
+  .card .av { width:100%; aspect-ratio:1; border-radius:50%; object-fit:cover; background:var(--panel2);
+          border:2px solid var(--line); }
+  .card .sq { width:100%; aspect-ratio:1; border-radius:10px; object-fit:cover; background:var(--panel2); }
+  .card .nm { margin-top:8px; font-size:13px; text-align:center; }
+  .card .ct { font-size:11px; color:var(--dim); text-align:center; }
+
+  #status { padding:18px; color:var(--dim); font-size:13px; }
+  #sentinel { height:1px; }
+
+  /* viewer */
+  #viewer { position:fixed; inset:0; background:rgba(0,0,0,.96); display:none; z-index:100; }
+  #viewer.on { display:flex; align-items:center; justify-content:center; }
+  #viewer .stage { max-width:100vw; max-height:100vh; display:flex; align-items:center; justify-content:center; }
+  #viewer img, #viewer video { max-width:94vw; max-height:88vh; border-radius:6px; }
+  #viewer .top { position:absolute; top:0; left:0; right:0; display:flex; gap:10px; align-items:center;
+          padding:14px 18px; background:linear-gradient(rgba(0,0,0,.6), transparent); }
+  #viewer .top .grow { margin-left:auto; }
+  #viewer .nav-arrow { position:absolute; top:50%; transform:translateY(-50%); font-size:40px;
+          color:#fff; cursor:pointer; padding:10px 18px; user-select:none; opacity:.6; }
+  #viewer .nav-arrow:hover { opacity:1; }
+  #prev { left:6px; } #next { right:6px; }
+  .iconbtn { background:rgba(255,255,255,.1); border:0; color:#fff; width:38px; height:38px;
+          border-radius:50%; cursor:pointer; font-size:16px; }
+  .iconbtn:hover { background:rgba(255,255,255,.22); }
+  .iconbtn.on { color:#ffd24a; }
+
+  /* tag popover */
+  #tagpop { position:absolute; top:60px; right:18px; width:260px; background:var(--panel);
+          border:1px solid var(--line); border-radius:12px; padding:12px; display:none; z-index:120; }
+  #tagpop.on { display:block; }
+  #tagpop h4 { margin:0 0 10px; font-size:13px; }
+  #tagpop .plist { max-height:220px; overflow:auto; margin-bottom:10px; }
+  #tagpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
+  #tagpop .prow:hover { background:var(--panel2); }
+  #tagpop .prow .chk { margin-left:auto; color:var(--accent); }
+  #tagpop .newrow { display:flex; gap:6px; }
+  #tagpop input { flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+          padding:7px 9px; border-radius:8px; font-size:13px; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--panel2);
+          border:1px solid var(--line); padding:10px 16px; border-radius:10px; font-size:13px;
+          z-index:200; opacity:0; transition:opacity .2s; }
+  .toast.on { opacity:1; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Photos</h1>
-  <span class="pill" id="count">–</span>
-  <span class="pill" id="scan">–</span>
-  <button onclick="rescan()" style="margin-left:auto;background:#2a2a2e;color:#eee;border:0;padding:6px 12px;border-radius:6px;cursor:pointer">Rescan</button>
-</header>
-<div id="grid"></div>
-<div id="status">Loading…</div>
-<div id="viewer" onclick="if(event.target.id==='viewer') closeViewer()">
-  <span id="close" onclick="closeViewer()">×</span>
-  <div id="vbody"></div>
+<div id="app">
+  <header>
+    <h1>Chitra</h1>
+    <span class="pill" id="count">–</span>
+    <span class="pill" id="scan">–</span>
+    <span class="grow"></span>
+    <button class="btn" onclick="rescan()">Rescan</button>
+  </header>
+
+  <nav id="nav">
+    <div class="item active" data-view="photos"><span class="ic">▦</span> Photos</div>
+    <div class="item" data-view="search"><span class="ic">⌕</span> Search</div>
+    <div class="item" data-view="favorites"><span class="ic">★</span> Favorites</div>
+    <div class="sep"></div>
+    <div class="label">Library</div>
+    <div class="item" data-view="people"><span class="ic">☺</span> People</div>
+    <div class="item" data-view="albums"><span class="ic">▤</span> Albums</div>
+    <div class="item" data-view="videos"><span class="ic">▷</span> Videos</div>
+    <div class="sep"></div>
+    <div class="item" data-view="trash"><span class="ic">🗑</span> Trash</div>
+  </nav>
+
+  <main id="main">
+    <div id="searchbar"><input id="searchInput" placeholder="Search your photos — try &ldquo;beach&rdquo;, &ldquo;sunset&rdquo;, &ldquo;dog&rdquo;&hellip;" /></div>
+    <div class="crumb" id="crumb" style="display:none"></div>
+    <div id="cards" style="display:none"></div>
+    <div id="grid"></div>
+    <div id="status">Loading&hellip;</div>
+    <div id="sentinel"></div>
+  </main>
 </div>
+
+<div id="viewer">
+  <div class="top">
+    <button class="iconbtn" onclick="closeViewer()">✕</button>
+    <span class="grow"></span>
+    <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
+    <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
+    <button class="iconbtn" id="vTrash" title="Move to trash" onclick="trashCurrent()">🗑</button>
+  </div>
+  <div class="nav-arrow" id="prev" onclick="step(-1)">‹</div>
+  <div class="stage" id="stage"></div>
+  <div class="nav-arrow" id="next" onclick="step(1)">›</div>
+  <div id="tagpop">
+    <h4>Tag people in this photo</h4>
+    <div class="plist" id="tagList"></div>
+    <div class="newrow">
+      <input id="newPerson" placeholder="New person name" onkeydown="if(event.key==='Enter')addPerson()" />
+      <button class="btn accent" onclick="addPerson()">Add</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
 <script>
-let page = 1, loading = false, done = false;
-async function health() {
-  const r = await fetch('/api/health'); const j = await r.json();
-  document.getElementById('count').textContent = j.items_indexed + ' items';
-  document.getElementById('scan').textContent =
-    j.scan.running ? ('scanning ' + j.scan.scanned + '/' + j.scan.total_seen) : 'idle';
-}
-async function loadMore() {
-  if (loading || done) return; loading = true;
-  const r = await fetch('/api/media?page=' + page + '&per_page=80');
-  const j = await r.json();
-  const g = document.getElementById('grid');
-  for (const m of j.items) {
-    const el = document.createElement('div'); el.className = 'tile';
-    el.innerHTML = '<img loading="lazy" src="/api/media/' + m.id + '/thumb">'
-      + (m.kind === 'video' ? '<span class="badge">▶</span>' : '');
-    el.onclick = () => openViewer(m);
-    g.appendChild(el);
-  }
-  if (j.items.length < j.per_page) done = true;
-  page++;
-  document.getElementById('status').textContent =
-    done ? 'End (' + j.total + ' items)' : 'Scroll for more…';
-  loading = false;
-}
-function openViewer(m) {
-  const v = document.getElementById('viewer');
-  const b = document.getElementById('vbody');
-  if (m.kind === 'video') {
-    b.innerHTML = '<video controls autoplay src="/api/media/' + m.id + '/full"></video>';
-  } else {
-    const url = (m.ext === '.heic' || m.ext === '.heif')
-      ? '/api/media/' + m.id + '/full?as=jpeg'
-      : '/api/media/' + m.id + '/full';
-    b.innerHTML = '<img src="' + url + '">';
-  }
-  v.classList.add('on');
-}
-function closeViewer() {
-  document.getElementById('viewer').classList.remove('on');
-  document.getElementById('vbody').innerHTML = '';
-}
-async function rescan() {
-  await fetch('/api/rescan', { method: 'POST' });
-  health();
-}
-window.addEventListener('scroll', () => {
-  if (window.innerHeight + window.scrollY > document.body.offsetHeight - 600) loadMore();
+const $ = s => document.querySelector(s);
+const api = (p, o) => fetch(p, o);
+const getJSON = async (p, o) => { const r = await api(p, o); if(!r.ok) throw {status:r.status}; return r.json(); };
+const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const PER = 80;
+let state = { view:'photos', page:1, loading:false, done:false, params:{}, items:[], cur:-1 };
+let io;
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('on'),1800); }
+
+// ---------- navigation ----------
+document.querySelectorAll('#nav .item').forEach(el=>{
+  el.addEventListener('click', ()=> switchView(el.dataset.view));
 });
-health(); loadMore(); setInterval(health, 4000);
+function setActive(view){
+  document.querySelectorAll('#nav .item').forEach(el=> el.classList.toggle('active', el.dataset.view===view));
+}
+function switchView(view, params){
+  state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
+  setActive(view);
+  $('#searchbar').classList.toggle('on', view==='search');
+  $('#grid').innerHTML=''; $('#cards').innerHTML=''; $('#cards').style.display='none'; $('#grid').style.display='grid';
+  $('#crumb').style.display='none';
+  $('#status').textContent='';
+  if(view==='people'){ loadPeople(); return; }
+  if(view==='albums'){ loadAlbums(); return; }
+  if(view==='search'){ $('#status').textContent='Type to search.'; $('#searchInput').focus(); return; }
+  loadGrid(true);
+}
+
+// ---------- main media grid (infinite scroll) ----------
+function gridQuery(){
+  const p = new URLSearchParams({ page:state.page, per_page:PER });
+  const v = state.view;
+  if(v==='favorites') p.set('favorites','1');
+  if(v==='videos') p.set('kind','video');
+  if(v==='trash') p.set('trashed','1');
+  Object.entries(state.params).forEach(([k,val])=> p.set(k,val));
+  return '/api/media?'+p.toString();
+}
+async function loadGrid(reset){
+  if(state.loading || state.done) return;
+  state.loading = true;
+  try{
+    const data = await getJSON(gridQuery());
+    if(reset){ $('#count').textContent = data.total+' items'; }
+    appendTiles(data.items);
+    state.items.push(...data.items);
+    state.page++;
+    if(data.items.length < PER) state.done = true;
+    $('#status').textContent = state.items.length ? (state.done? state.items.length+' shown':'') : 'Nothing here yet.';
+  }catch(e){ $('#status').textContent = 'Failed to load ('+(e.status||e)+').'; }
+  state.loading=false;
+}
+function tileHTML(m, idx){
+  const fav = m.favorite? '<span class="fav">★</span>':'';
+  const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
+  return `<div class="tile" data-idx="${idx}">
+    <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/>${fav}${badge}</div>`;
+}
+function appendTiles(items){
+  // Tile index = its position in state.items, derived from how many tiles already exist.
+  const offset = $('#grid').children.length;
+  const frag = document.createElement('div');
+  frag.innerHTML = items.map((m,i)=> tileHTML(m, offset+i)).join('');
+  [...frag.children].forEach(el=>{
+    el.addEventListener('click', ()=> openViewer(parseInt(el.dataset.idx,10)));
+    $('#grid').appendChild(el);
+  });
+}
+
+// ---------- People ----------
+async function loadPeople(){
+  $('#grid').style.display='none'; $('#cards').style.display='grid'; $('#status').textContent='Loading people…';
+  let clusters=[], persons=[];
+  try{ clusters = await getJSON('/api/clusters'); }catch(e){}
+  try{ persons = await getJSON('/api/persons'); }catch(e){}
+  const cards = [];
+  persons.filter(p=>p.count>0).forEach(p=>{
+    cards.push(`<div class="card" data-pid="${p.id}" data-pname="${esc(p.name)}">
+      <div class="av" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">☺</div>
+      <div class="nm">${esc(p.name)}</div><div class="ct">${p.count} photos</div></div>`);
+  });
+  clusters.forEach(c=>{
+    const label = c.name? esc(c.name) : 'Unnamed';
+    cards.push(`<div class="card" data-cid="${c.id}">
+      <img class="av" loading="lazy" src="/api/clusters/${c.id}/thumb"/>
+      <div class="nm">${label}</div><div class="ct">${c.count} faces · click to name</div></div>`);
+  });
+  $('#cards').innerHTML = cards.join('');
+  $('#cards').querySelectorAll('[data-cid]').forEach(el=> el.addEventListener('click', ()=> openCluster(parseInt(el.dataset.cid,10))));
+  $('#cards').querySelectorAll('[data-pid]').forEach(el=> el.addEventListener('click', ()=> openPerson(parseInt(el.dataset.pid,10), el.dataset.pname)));
+  $('#status').textContent = cards.length? '' :
+    'No people yet. Run the face indexer:  PHOTO_ROOT=… .venv/bin/python face_indexer.py';
+}
+async function openCluster(cid){
+  const name = prompt('Name this person (leave blank to just view their photos):');
+  if(name && name.trim()){
+    await api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:name.trim()})});
+    toast('Saved name');
+  }
+  const items = await getJSON(`/api/clusters/${cid}/media`);
+  showCollection(name && name.trim()? name.trim() : 'Person', items);
+}
+async function openPerson(pid, name){
+  const items = await getJSON(`/api/persons/${pid}/media`);
+  showCollection(name, items);
+}
+
+// ---------- Albums ----------
+async function loadAlbums(){
+  $('#grid').style.display='none'; $('#cards').style.display='grid'; $('#status').textContent='Loading albums…';
+  let albums=[];
+  try{ albums = await getJSON('/api/albums'); }catch(e){}
+  $('#cards').innerHTML = albums.map(a=>{
+    const nm = a.album==='_root'? 'Library root' : a.album;
+    return `<div class="card" data-album="${esc(a.album)}">
+      <div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>
+      <div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
+  }).join('');
+  $('#cards').querySelectorAll('[data-album]').forEach(el=>
+    el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
+  $('#status').textContent = albums.length? '' : 'No albums.';
+}
+
+// Show an arbitrary list of items (person / cluster results) as a grid
+function showCollection(title, items){
+  state.view='collection'; state.items=[]; state.done=true; state.loading=false; state.params={};
+  setActive('');
+  $('#cards').style.display='none'; $('#grid').style.display='grid'; $('#grid').innerHTML='';
+  $('#crumb').style.display='flex';
+  $('#crumb').innerHTML = `<span style="cursor:pointer" id="crumbBack">‹ Back</span> · <b>${esc(title)}</b> · ${items.length} photos`;
+  $('#crumbBack').addEventListener('click', ()=> switchView('people'));
+  state.items.push(...items); appendTiles(items);
+  $('#status').textContent = items.length? '' : 'No photos.';
+}
+
+// ---------- Search (semantic, falls back to filename) ----------
+let searchTimer;
+$('#searchInput').addEventListener('input', e=>{
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  searchTimer = setTimeout(()=> runSearch(q), 350);
+});
+async function runSearch(q){
+  if(!q){ $('#grid').innerHTML=''; state.items=[]; $('#status').textContent='Type to search.'; return; }
+  state.items=[]; state.done=true; $('#grid').innerHTML=''; $('#status').textContent='Searching…';
+  try{
+    const data = await getJSON('/api/search_semantic?q='+encodeURIComponent(q)+'&top_k=120');
+    state.items.push(...data.items); appendTiles(data.items);
+    $('#status').textContent = data.items.length? data.items.length+' results (smart search)' : 'No matches.';
+  }catch(e){
+    try{
+      const data = await getJSON('/api/media?q='+encodeURIComponent(q)+'&per_page=120');
+      state.items.push(...data.items); appendTiles(data.items);
+      const note = e.status===503? ' (filename match — run clip_indexer.py for smart search)':'';
+      $('#status').textContent = (data.items.length? data.items.length+' results':'No matches')+note;
+    }catch(e2){ $('#status').textContent='Search failed.'; }
+  }
+}
+
+// ---------- Viewer ----------
+function curItem(){ return state.items[state.cur]; }
+function openViewer(idx){ state.cur = idx; renderViewer(); $('#viewer').classList.add('on'); }
+function closeViewer(){ $('#viewer').classList.remove('on'); $('#tagpop').classList.remove('on'); $('#stage').innerHTML=''; }
+function renderViewer(){
+  const m = curItem(); if(!m) return;
+  const stage = $('#stage');
+  if(m.kind==='video'){
+    stage.innerHTML = `<video controls autoplay playsinline src="/api/media/${m.id}/stream.mp4"></video>`;
+  }else{
+    const as = (m.ext==='.heic'||m.ext==='.heif')? '?as=jpeg':'';
+    stage.innerHTML = `<img src="/api/media/${m.id}/full${as}"/>`;
+  }
+  $('#vFav').classList.toggle('on', !!m.favorite);
+  $('#tagpop').classList.remove('on');
+  $('#prev').style.visibility = state.cur>0? 'visible':'hidden';
+  $('#next').style.visibility = state.cur<state.items.length-1? 'visible':'hidden';
+}
+function step(d){
+  const n = state.cur+d;
+  if(n<0||n>=state.items.length) return;
+  state.cur=n; renderViewer();
+  if(!state.done && n > state.items.length-8) loadGrid(false);
+}
+document.addEventListener('keydown', e=>{
+  if(!$('#viewer').classList.contains('on')) return;
+  if(e.key==='Escape') closeViewer();
+  if(e.key==='ArrowLeft') step(-1);
+  if(e.key==='ArrowRight') step(1);
+});
+async function toggleFav(){
+  const m = curItem(); if(!m) return;
+  const r = await getJSON(`/api/media/${m.id}/favorite`, {method:'POST'});
+  m.favorite = r.favorite? 1:0;
+  $('#vFav').classList.toggle('on', !!m.favorite);
+  const tile = $(`#grid .tile[data-idx="${state.cur}"]`);
+  if(tile){ const old=tile.querySelector('.fav'); if(m.favorite && !old){ tile.insertAdjacentHTML('beforeend','<span class="fav">★</span>'); } else if(!m.favorite && old){ old.remove(); } }
+  toast(m.favorite? 'Added to favorites':'Removed from favorites');
+}
+async function trashCurrent(){
+  const m = curItem(); if(!m) return;
+  if(!confirm('Move this item to trash?')) return;
+  await api(`/api/media/${m.id}/trash`, {method:'POST'});
+  toast('Moved to trash'); closeViewer(); switchView(state.view==='collection'?'photos':state.view);
+}
+
+// ---------- Tagging ----------
+async function toggleTagPop(){
+  const pop = $('#tagpop');
+  if(pop.classList.contains('on')){ pop.classList.remove('on'); return; }
+  await renderTagList(); pop.classList.add('on');
+}
+async function renderTagList(){
+  const m = curItem(); if(!m) return;
+  let persons=[]; try{ persons = await getJSON('/api/persons'); }catch(e){}
+  m._tags = m._tags || new Set();
+  $('#tagList').innerHTML = persons.map(p=>`
+    <div class="prow" data-pid="${p.id}">${esc(p.name)} <span class="chk">${m._tags.has(p.id)?'✓':''}</span></div>`).join('')
+    || '<div style="color:var(--dim);font-size:12px">No people yet — add one below.</div>';
+  $('#tagList').querySelectorAll('[data-pid]').forEach(el=>
+    el.addEventListener('click', ()=> togglePersonTag(parseInt(el.dataset.pid,10), el)));
+}
+async function togglePersonTag(pid, el){
+  const m = curItem(); if(!m) return;
+  m._tags = m._tags || new Set();
+  const has = m._tags.has(pid);
+  await api(`/api/persons/${pid}/tag/${m.id}`, {method: has?'DELETE':'POST'});
+  if(has){ m._tags.delete(pid); el.querySelector('.chk').textContent=''; }
+  else { m._tags.add(pid); el.querySelector('.chk').textContent='✓'; }
+  toast(has?'Untagged':'Tagged');
+}
+async function addPerson(){
+  const inp = $('#newPerson'); const name = inp.value.trim(); if(!name) return;
+  const p = await getJSON('/api/persons', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+  inp.value='';
+  const m = curItem();
+  if(m && p && p.id){ await api(`/api/persons/${p.id}/tag/${m.id}`, {method:'POST'}); m._tags=m._tags||new Set(); m._tags.add(p.id); }
+  await renderTagList();
+  toast('Added & tagged '+name);
+}
+
+// ---------- header / health / scan polling ----------
+async function refreshHealth(){
+  try{
+    const h = await getJSON('/api/health');
+    $('#count').textContent = h.items_indexed+' items';
+    const s = h.scan||{};
+    $('#scan').textContent = s.running? `scanning ${s.scanned||0}/${s.total_seen||0}` : 'idle';
+    return s.running;
+  }catch(e){ $('#scan').textContent='offline'; return false; }
+}
+async function rescan(){ await api('/api/rescan', {method:'POST'}); toast('Rescan started'); pollScan(); }
+let scanPoll;
+function pollScan(){
+  clearInterval(scanPoll);
+  scanPoll = setInterval(async ()=>{ const running = await refreshHealth(); if(!running) clearInterval(scanPoll); }, 1500);
+}
+
+// ---------- infinite scroll ----------
+io = new IntersectionObserver(entries=>{
+  if(entries[0].isIntersecting && ['photos','favorites','videos','trash'].includes(state.view)) loadGrid(false);
+}, {rootMargin:'600px'});
+io.observe($('#sentinel'));
+
+// ---------- boot ----------
+refreshHealth().then(r=>{ if(r) pollScan(); });
+switchView('photos');
 </script>
 </body>
 </html>
