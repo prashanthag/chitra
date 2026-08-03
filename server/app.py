@@ -1620,22 +1620,27 @@ def start_thumb_warmer() -> None:
     """Pre-generate missing thumbnails in the background (THUMB_WARM=1) so
     grids don't pay the ffmpeg/decode cost on first view."""
     def loop():
+        from concurrent.futures import ThreadPoolExecutor
         while _scan_state.get("running"):
             time.sleep(5)
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+        # Photos first: they cost ~100ms each vs seconds per video, so the
+        # grid becomes browsable long before the slow tail of videos.
         rows = conn.execute(
-            "SELECT * FROM media WHERE trashed_at IS NULL ORDER BY taken_at DESC"
+            "SELECT * FROM media WHERE trashed_at IS NULL "
+            "ORDER BY (kind != 'photo'), taken_at DESC"
         ).fetchall()
         conn.close()
+        todo = [r for r in rows
+                if not (p := thumb_path_for(r["id"])).exists() or p.stat().st_size == 0]
         made = 0
-        for r in rows:
-            p = thumb_path_for(r["id"])
-            if p.exists() and p.stat().st_size > 0:
-                continue
-            ensure_thumb(r)
-            made += 1
-        print(f"[thumbwarm] done, generated {made} thumbnails")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for _ in pool.map(ensure_thumb, todo):
+                made += 1
+                if made % 500 == 0:
+                    print(f"[thumbwarm] {made}/{len(todo)}")
+        print(f"[thumbwarm] done, attempted {made} thumbnails")
     threading.Thread(target=loop, daemon=True, name="thumbwarm").start()
 
 
