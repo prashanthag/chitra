@@ -495,19 +495,36 @@ def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, backend: str) -> list[str
     ]
 
 
+def _thumb_brightness(p: Path) -> float:
+    try:
+        with Image.open(p) as im:
+            im = im.convert("L")
+            im.thumbnail((64, 64))
+            hist = im.histogram()
+            total = sum(hist) or 1
+            return sum(i * n for i, n in enumerate(hist)) / total
+    except Exception:
+        return 255.0
+
+
 def make_video_thumb(src: Path, dst: Path) -> bool:
-    """Extract a frame ~1s in. Tries the detected GPU backend, falls back to CPU."""
+    """Extract a frame, seeking deeper if the early frames are black (common
+    at the start of clips). Tries the GPU backend, falls back to CPU."""
     backends = [VIDEO_BACKEND] + ([gpu.CPU] if VIDEO_BACKEND != gpu.CPU else [])
-    for seek in ("1", "0"):
+    got = False
+    for seek in ("1", "5", "15", "0"):
         for backend in backends:
             try:
                 cmd = _ffmpeg_thumb_cmd(src, dst, seek, backend)
                 r = subprocess.run(cmd, capture_output=True, timeout=12)
                 if r.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
-                    return True
+                    got = True
+                    break
             except Exception as e:
                 print(f"[thumb] video {src} ({backend}): {e}")
-    return False
+        if got and _thumb_brightness(dst) > 16:
+            return True  # bright enough — keep it
+    return got
 
 
 _placeholder_bytes: bytes | None = None
