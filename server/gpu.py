@@ -71,9 +71,29 @@ def detect_backend() -> str:
         spec = _BACKENDS[backend]
         if spec["encoder"] in encoders and (
             spec["hwaccel"] is None or spec["hwaccel"] in hwaccels
-        ):
+        ) and _works(backend):
             return backend
     return CPU
+
+
+def _works(backend: str) -> bool:
+    """Encode a few synthetic frames to prove the backend really works.
+
+    A listed encoder can still fail at runtime — e.g. NVENC reports
+    "unsupported device" after a driver update until the machine reboots —
+    which would otherwise make every transcode silently emit zero bytes.
+    """
+    _, out_args = transcode_args(backend, "1M", "2M", "2M")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if backend == VAAPI:
+        cmd += ["-vaapi_device",
+                os.environ.get("VAAPI_DEVICE", "/dev/dri/renderD128")]
+    cmd += ["-f", "lavfi", "-i", "color=black:size=256x144:rate=30:duration=0.2",
+            *out_args, "-an", "-f", "null", "-"]
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=15).returncode == 0
+    except Exception:
+        return False
 
 
 def describe(backend: str) -> str:

@@ -1260,20 +1260,31 @@ def media_stream_mp4(mid: str):
         "-movflags", "frag_keyframe+empty_moov+faststart",
         "-f", "mp4", "pipe:1",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def gen():
+        streamed = False
         try:
             while True:
                 chunk = proc.stdout.read(1024 * 64)
                 if not chunk:
                     break
+                streamed = True
                 yield chunk
         finally:
             try:
                 proc.kill()
             except Exception:
                 pass
+            if not streamed:
+                try:
+                    err = (proc.stderr.read() or b"").decode(errors="replace")
+                except Exception:
+                    err = ""
+                app.logger.error(
+                    "stream transcode produced no output for %s: %s",
+                    mid, err.strip()[-500:],
+                )
 
     return Response(gen(), mimetype="video/mp4")
 
