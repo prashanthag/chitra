@@ -54,6 +54,20 @@
           padding:2px 7px; border-radius:5px; font-size:11px; }
   .tile .fav { position:absolute; top:5px; right:7px; font-size:14px; color:#ffd24a;
           text-shadow:0 1px 3px #000; }
+  .tile .sel { position:absolute; top:6px; left:6px; width:22px; height:22px; border-radius:50%;
+          background:rgba(0,0,0,.45); border:2px solid #fff; color:transparent; font-size:13px;
+          line-height:18px; text-align:center; cursor:pointer; opacity:0; transition:opacity .15s; z-index:2; }
+  .tile:hover .sel, #grid.selecting .tile .sel { opacity:1; }
+  .tile.selected .sel { background:var(--accent); border-color:var(--accent); color:#fff; opacity:1; }
+  .tile.selected img { transform:scale(.86); border-radius:10px; }
+
+  /* selection action bar */
+  #selbar { position:sticky; top:0; z-index:40; display:none; align-items:center; gap:10px;
+          padding:10px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #selbar.on { display:flex; }
+  #selbar .cnt { font-size:14px; font-weight:600; }
+  .btn.danger { background:#3a1518; border-color:#5c2226; color:#ff8a8a; }
+  .btn.danger:hover { border-color:#a03338; }
 
   /* people / album cards */
   #cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap:14px; padding:18px; }
@@ -133,6 +147,15 @@
   </nav>
 
   <main id="main">
+    <div id="selbar">
+      <button class="btn" title="Clear selection" onclick="clearSel()">✕</button>
+      <span class="cnt" id="selCount">0 selected</span>
+      <button class="btn" onclick="selectAll()">Select all</button>
+      <span style="margin-left:auto"></span>
+      <button class="btn danger" id="selTrash" onclick="bulkTrash()">🗑 Move to trash</button>
+      <button class="btn" id="selRestore" onclick="bulkRestore()">↩ Restore</button>
+      <button class="btn danger" id="selDelete" onclick="bulkDelete()">Delete forever</button>
+    </div>
     <div id="searchbar"><input id="searchInput" placeholder="Search your photos — try &ldquo;beach&rdquo;, &ldquo;sunset&rdquo;, &ldquo;dog&rdquo;&hellip;" /></div>
     <div class="crumb" id="crumb" style="display:none"></div>
     <div id="cards" style="display:none"></div>
@@ -172,7 +195,7 @@ const getJSON = async (p, o) => { const r = await api(p, o); if(!r.ok) throw {st
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 const PER = 80;
-let state = { view:'photos', page:1, loading:false, done:false, params:{}, items:[], cur:-1, gen:0 };
+let state = { view:'photos', page:1, loading:false, done:false, params:{}, items:[], cur:-1, gen:0, sel:new Set() };
 let io;
 let CLIP_OK = false;  // is smart (CLIP) search available? set from /api/health
 
@@ -190,6 +213,7 @@ function switchView(view, params){
   // and clear the loading flag so the new view can fetch immediately.
   state.gen++; state.loading=false;
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
+  state.sel.clear(); updateSelBar();
   setActive(view);
   $('#searchbar').classList.toggle('on', view==='search');
   $('#grid').innerHTML=''; $('#cards').innerHTML=''; $('#cards').style.display='none'; $('#grid').style.display='grid';
@@ -203,14 +227,16 @@ function switchView(view, params){
 }
 
 // ---------- main media grid (infinite scroll) ----------
-function gridQuery(){
-  const p = new URLSearchParams({ page:state.page, per_page:PER });
+function viewParams(p){
   const v = state.view;
   if(v==='favorites') p.set('favorites','1');
   if(v==='videos') p.set('kind','video');
   if(v==='trash') p.set('trashed','1');
   Object.entries(state.params).forEach(([k,val])=> p.set(k,val));
-  return '/api/media?'+p.toString();
+  return p;
+}
+function gridQuery(){
+  return '/api/media?'+viewParams(new URLSearchParams({ page:state.page, per_page:PER }));
 }
 async function loadGrid(reset){
   if(state.loading || state.done) return;
@@ -231,8 +257,9 @@ async function loadGrid(reset){
 function tileHTML(m, idx){
   const fav = m.favorite? '<span class="fav">★</span>':'';
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
-  return `<div class="tile" data-idx="${idx}">
-    <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/>${fav}${badge}</div>`;
+  const on = state.sel.has(m.id)? ' selected':'';
+  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}">
+    <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
 }
 function appendTiles(items){
   // Tile index = its position in state.items, derived from how many tiles already exist.
@@ -240,9 +267,80 @@ function appendTiles(items){
   const frag = document.createElement('div');
   frag.innerHTML = items.map((m,i)=> tileHTML(m, offset+i)).join('');
   [...frag.children].forEach(el=>{
-    el.addEventListener('click', ()=> openViewer(parseInt(el.dataset.idx,10)));
+    el.addEventListener('click', ev=>{
+      if(ev.target.classList.contains('sel') || state.sel.size){ toggleSel(el); return; }
+      openViewer(parseInt(el.dataset.idx,10));
+    });
     $('#grid').appendChild(el);
   });
+}
+
+// ---------- multi-select & bulk actions ----------
+function toggleSel(el){
+  const id = el.dataset.id;
+  if(state.sel.has(id)){ state.sel.delete(id); el.classList.remove('selected'); }
+  else { state.sel.add(id); el.classList.add('selected'); }
+  updateSelBar();
+}
+function updateSelBar(){
+  const n = state.sel.size;
+  $('#selbar').classList.toggle('on', n>0);
+  $('#grid').classList.toggle('selecting', n>0);
+  $('#selCount').textContent = n+' selected';
+  const inTrash = state.view==='trash';
+  $('#selTrash').style.display = inTrash? 'none':'';
+  $('#selRestore').style.display = inTrash? '':'none';
+  $('#selDelete').style.display = inTrash? '':'none';
+}
+function markTiles(){
+  document.querySelectorAll('#grid .tile').forEach(el=>
+    el.classList.toggle('selected', state.sel.has(el.dataset.id)));
+}
+function clearSel(){ state.sel.clear(); markTiles(); updateSelBar(); }
+async function selectAll(){
+  if(state.view==='collection'){
+    state.items.forEach(m=> state.sel.add(m.id));
+  }else{
+    // Walk every page of the current view so selection covers items
+    // that infinite scroll hasn't rendered yet.
+    let page = 1;
+    while(true){
+      const d = await getJSON('/api/media?'+viewParams(new URLSearchParams({page, per_page:200})));
+      d.items.forEach(m=> state.sel.add(m.id));
+      if(d.items.length < 200) break;
+      page++;
+    }
+  }
+  markTiles(); updateSelBar();
+  toast(state.sel.size+' selected');
+}
+const idsPost = ids => ({method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids})});
+function reloadView(){
+  const v = state.view==='collection'? 'photos' : state.view;
+  switchView(v, state.params); refreshHealth();
+}
+async function bulkTrash(){
+  const n = state.sel.size; if(!n) return;
+  if(!confirm(`Move ${n} item${n>1?'s':''} to trash?`)) return;
+  try{
+    await getJSON('/api/media/batch_trash', idsPost([...state.sel]));
+    toast(`Moved ${n} to trash`); reloadView();
+  }catch(e){ toast('Failed ('+(e.status||e)+')'); }
+}
+async function bulkRestore(){
+  const n = state.sel.size; if(!n) return;
+  try{
+    await getJSON('/api/media/batch_restore', idsPost([...state.sel]));
+    toast(`Restored ${n}`); reloadView();
+  }catch(e){ toast('Failed ('+(e.status||e)+')'); }
+}
+async function bulkDelete(){
+  const n = state.sel.size; if(!n) return;
+  if(!confirm(`Permanently delete ${n} item${n>1?'s':''}? Files are removed from disk — this cannot be undone.`)) return;
+  try{
+    const r = await getJSON('/api/media/batch_delete', idsPost([...state.sel]));
+    toast(`Deleted ${r.count} forever`); reloadView();
+  }catch(e){ toast('Failed ('+(e.status||e)+')'); }
 }
 
 // ---------- People ----------
@@ -322,6 +420,7 @@ async function loadCameras(){
 // Show an arbitrary list of items (person / cluster results) as a grid
 function showCollection(title, items){
   state.view='collection'; state.items=[]; state.done=true; state.loading=false; state.params={};
+  state.sel.clear(); updateSelBar();
   setActive('');
   $('#cards').style.display='none'; $('#grid').style.display='grid'; $('#grid').innerHTML='';
   $('#crumb').style.display='flex';
@@ -384,7 +483,10 @@ function step(d){
   if(!state.done && n > state.items.length-8) loadGrid(false);
 }
 document.addEventListener('keydown', e=>{
-  if(!$('#viewer').classList.contains('on')) return;
+  if(!$('#viewer').classList.contains('on')){
+    if(e.key==='Escape' && state.sel.size) clearSel();
+    return;
+  }
   if(e.key==='Escape') closeViewer();
   if(e.key==='ArrowLeft') step(-1);
   if(e.key==='ArrowRight') step(1);

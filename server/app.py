@@ -831,6 +831,67 @@ def restore_media(mid: str):
     return jsonify({"ok": True, "trashed": False})
 
 
+def _batch_ids() -> list[str]:
+    ids = (request.get_json(silent=True) or {}).get("ids")
+    if not isinstance(ids, list):
+        abort(400)
+    return [str(i) for i in ids]
+
+
+@app.post("/api/media/batch_trash")
+def batch_trash():
+    ids = _batch_ids()
+    now = time.time()
+    db().executemany(
+        "UPDATE media SET trashed_at = ? WHERE id = ?", [(now, i) for i in ids]
+    )
+    db().commit()
+    return jsonify({"ok": True, "count": len(ids)})
+
+
+@app.post("/api/media/batch_restore")
+def batch_restore():
+    ids = _batch_ids()
+    db().executemany(
+        "UPDATE media SET trashed_at = NULL WHERE id = ?", [(i,) for i in ids]
+    )
+    db().commit()
+    return jsonify({"ok": True, "count": len(ids)})
+
+
+@app.post("/api/media/batch_delete")
+def batch_delete():
+    """Permanently delete items (file on disk + index row + thumbnail).
+    Only items already in the trash are eligible, so a stray call can't
+    destroy live library files."""
+    ids = _batch_ids()
+    deleted = 0
+    for mid in ids:
+        r = db().execute(
+            "SELECT id, path FROM media WHERE id = ? AND trashed_at IS NOT NULL",
+            (mid,),
+        ).fetchone()
+        if not r:
+            continue
+        try:
+            p = Path(r["path"])
+            if p.exists():
+                p.unlink()
+        except Exception as e:
+            print(f"[delete] file delete failed {r['path']}: {e}")
+            continue
+        t = THUMB_DIR / f"{r['id']}.jpg"
+        if t.exists():
+            try:
+                t.unlink()
+            except Exception:
+                pass
+        db().execute("DELETE FROM media WHERE id = ?", (r["id"],))
+        deleted += 1
+    db().commit()
+    return jsonify({"ok": True, "count": deleted})
+
+
 @app.post("/api/media/<mid>/archive")
 def archive_media(mid: str):
     cur = db().execute("SELECT archived FROM media WHERE id = ?", (mid,)).fetchone()
