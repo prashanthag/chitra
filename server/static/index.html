@@ -102,6 +102,16 @@
   #tagpop { position:absolute; top:60px; right:18px; width:260px; background:var(--panel);
           border:1px solid var(--line); border-radius:12px; padding:12px; display:none; z-index:120; }
   #tagpop.on { display:block; }
+
+  /* info popover */
+  #infopop { position:absolute; top:60px; right:18px; width:300px; background:var(--panel);
+          border:1px solid var(--line); border-radius:12px; padding:12px 14px; display:none; z-index:120; }
+  #infopop.on { display:block; }
+  #infopop h4 { margin:0 0 8px; font-size:13px; }
+  #infopop .irow { display:flex; gap:10px; padding:5px 0; font-size:13px; border-top:1px solid var(--line); }
+  #infopop .irow:first-child { border-top:0; }
+  #infopop .ik { color:var(--dim); min-width:86px; }
+  #infopop .iv { word-break:break-all; }
   #tagpop h4 { margin:0 0 10px; font-size:13px; }
   #tagpop .plist { max-height:220px; overflow:auto; margin-bottom:10px; }
   #tagpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
@@ -169,6 +179,7 @@
   <div class="top">
     <button class="iconbtn" onclick="closeViewer()">✕</button>
     <span class="grow"></span>
+    <button class="iconbtn" id="vInfo" title="Info" onclick="toggleInfo()">ⓘ</button>
     <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
     <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
     <button class="iconbtn" id="vTrash" title="Move to trash" onclick="trashCurrent()">🗑</button>
@@ -176,6 +187,10 @@
   <div class="nav-arrow" id="prev" onclick="step(-1)">‹</div>
   <div class="stage" id="stage"></div>
   <div class="nav-arrow" id="next" onclick="step(1)">›</div>
+  <div id="infopop">
+    <h4>Info</h4>
+    <div id="infoRows"></div>
+  </div>
   <div id="tagpop">
     <h4>Tag people in this photo</h4>
     <div class="plist" id="tagList"></div>
@@ -461,7 +476,7 @@ async function runSearch(q){
 // ---------- Viewer ----------
 function curItem(){ return state.items[state.cur]; }
 function openViewer(idx){ state.cur = idx; renderViewer(); $('#viewer').classList.add('on'); }
-function closeViewer(){ $('#viewer').classList.remove('on'); $('#tagpop').classList.remove('on'); $('#stage').innerHTML=''; }
+function closeViewer(){ $('#viewer').classList.remove('on'); $('#tagpop').classList.remove('on'); $('#infopop').classList.remove('on'); $('#stage').innerHTML=''; }
 function renderViewer(){
   const m = curItem(); if(!m) return;
   const stage = $('#stage');
@@ -473,6 +488,7 @@ function renderViewer(){
   }
   $('#vFav').classList.toggle('on', !!m.favorite);
   $('#tagpop').classList.remove('on');
+  $('#infopop').classList.remove('on');
   $('#prev').style.visibility = state.cur>0? 'visible':'hidden';
   $('#next').style.visibility = state.cur<state.items.length-1? 'visible':'hidden';
 }
@@ -505,6 +521,34 @@ async function trashCurrent(){
   if(!confirm('Move this item to trash?')) return;
   await api(`/api/media/${m.id}/trash`, {method:'POST'});
   toast('Moved to trash'); closeViewer(); switchView(state.view==='collection'?'photos':state.view);
+}
+
+// ---------- Info panel ----------
+async function toggleInfo(){
+  const pop = $('#infopop');
+  if(pop.classList.contains('on')){ pop.classList.remove('on'); return; }
+  const m = curItem(); if(!m) return;
+  let d = m;
+  try{ d = await getJSON(`/api/media/${m.id}`); }catch(e){}
+  const fmtDate = t => t? new Date(t*1000).toLocaleString(undefined,
+      {year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : null;
+  const fmtSize = b => b==null? null : (b>=1e9? (b/1e9).toFixed(2)+' GB' : b>=1e6? (b/1e6).toFixed(1)+' MB' : Math.round(b/1e3)+' KB');
+  const cam = [d.camera_make, d.camera_model].filter(Boolean).join(' ') || null;
+  const rows = [
+    ['Name', d.name],
+    ['Date taken', fmtDate(d.taken_at)],
+    ['Camera', cam],
+    ['Resolution', d.width&&d.height? `${d.width} × ${d.height}` : null],
+    ['Type', [(d.kind||''), (d.ext||'').replace('.','').toUpperCase()].filter(Boolean).join(' · ')],
+    ['Size', fmtSize(d.size)],
+    ['Folder', d.album],
+    ['Location', d.lat!=null&&d.lng!=null? `${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}` : null],
+    ['File date', fmtDate(d.mtime)],
+  ].filter(r=> r[1]);
+  $('#infoRows').innerHTML = rows.map(([k,v])=>
+    `<div class="irow"><span class="ik">${esc(k)}</span><span class="iv">${esc(v)}</span></div>`).join('');
+  $('#tagpop').classList.remove('on');
+  pop.classList.add('on');
 }
 
 // ---------- Tagging ----------
