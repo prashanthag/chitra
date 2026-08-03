@@ -223,9 +223,10 @@ document.querySelectorAll('#nav .item').forEach(el=>{
 function setActive(view){
   document.querySelectorAll('#nav .item').forEach(el=> el.classList.toggle('active', el.dataset.view===view));
 }
-function switchView(view, params){
+function switchView(view, params, fromPop){
   // Bump generation so any in-flight loadGrid from the previous view is ignored,
   // and clear the loading flag so the new view can fetch immediately.
+  if(!fromPop) history.pushState({view, params: params||{}}, '');
   state.gen++; state.loading=false;
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
   state.sel.clear(); updateSelBar();
@@ -475,8 +476,17 @@ async function runSearch(q){
 
 // ---------- Viewer ----------
 function curItem(){ return state.items[state.cur]; }
-function openViewer(idx){ state.cur = idx; renderViewer(); $('#viewer').classList.add('on'); }
-function closeViewer(){ $('#viewer').classList.remove('on'); $('#tagpop').classList.remove('on'); $('#infopop').classList.remove('on'); $('#stage').innerHTML=''; }
+function openViewer(idx){ state.cur = idx; renderViewer(); $('#viewer').classList.add('on'); history.pushState({viewer:1}, ''); }
+function closeViewer(fromPop){
+  // Route through history so browser Back and the ✕ button behave the same.
+  if(!fromPop && history.state && history.state.viewer){ history.back(); return; }
+  $('#viewer').classList.remove('on'); $('#tagpop').classList.remove('on'); $('#infopop').classList.remove('on'); $('#stage').innerHTML='';
+}
+window.addEventListener('popstate', e=>{
+  if($('#viewer').classList.contains('on')){ closeViewer(true); return; }
+  const s = e.state || {};
+  switchView(s.view || 'photos', s.params || {}, true);
+});
 function renderViewer(){
   const m = curItem(); if(!m) return;
   const stage = $('#stage');
@@ -642,7 +652,8 @@ io.observe($('#sentinel'));
 
 // ---------- boot ----------
 refreshHealth().then(r=>{ if(r) pollScan(); });
-switchView('photos');
+history.replaceState({view:'photos', params:{}}, '');
+switchView('photos', {}, true);
 </script>
 </body>
 </html>

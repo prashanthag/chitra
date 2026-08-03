@@ -3,8 +3,10 @@ generates JPEG thumbnails on demand, streams originals + range-served video."""
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import io
+import json
 import mimetypes
 import os
 import re
@@ -224,11 +226,47 @@ def extract_exif(path: Path, kind: str) -> dict:
                         out["lng"] = lng
         except Exception:
             pass
+    elif kind == "video":
+        out.update(_video_meta(path))
     if "taken_at" not in out:
         try:
             out["taken_at"] = path.stat().st_mtime
         except OSError:
             pass
+    return out
+
+
+def _video_meta(path: Path) -> dict:
+    """Date / camera / GPS from a video container (ffprobe)."""
+    out: dict = {}
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, timeout=15)
+        j = json.loads(r.stdout or "{}")
+    except Exception:
+        return out
+    tags = dict(j.get("format", {}).get("tags", {}))
+    for s in j.get("streams", []):
+        tags.update(s.get("tags") or {})
+    make = _clean_exif_str(tags.get("com.apple.quicktime.make") or tags.get("make"))
+    model = _clean_exif_str(tags.get("com.apple.quicktime.model") or tags.get("model"))
+    if make:
+        out["make"] = make
+    if model:
+        out["model"] = model
+    dt = tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
+    if dt:
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})", str(dt))
+        if m and 1980 <= int(m.group(1)) <= 2035:
+            out["taken_at"] = calendar.timegm(
+                tuple(int(x) for x in m.groups()) + (0, 0, 0))
+    loc = tags.get("com.apple.quicktime.location.ISO6709") or tags.get("location")
+    if loc:
+        m = re.match(r"([+-]\d+\.?\d*)([+-]\d+\.?\d*)", str(loc))
+        if m:
+            out["lat"], out["lng"] = float(m.group(1)), float(m.group(2))
     return out
 
 
@@ -464,7 +502,7 @@ def make_video_thumb(src: Path, dst: Path) -> bool:
         for backend in backends:
             try:
                 cmd = _ffmpeg_thumb_cmd(src, dst, seek, backend)
-                r = subprocess.run(cmd, capture_output=True, timeout=30)
+                r = subprocess.run(cmd, capture_output=True, timeout=12)
                 if r.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
                     return True
             except Exception as e:
@@ -497,6 +535,13 @@ def ensure_thumb(row: sqlite3.Row) -> Path | None:
         ok = make_photo_thumb(src, p)
     else:
         ok = make_video_thumb(src, p)
+    if not ok:
+        # Negative-cache the failure as the placeholder so unreadable files
+        # (e.g. partially recovered videos) cost one attempt, not one per view.
+        try:
+            p.write_bytes(_placeholder_thumb())
+        except Exception:
+            pass
     return p if ok else None
 
 
@@ -1571,10 +1616,35 @@ def favicon():
 # ---------- Entrypoint ----------
 
 
+def start_thumb_warmer() -> None:
+    """Pre-generate missing thumbnails in the background (THUMB_WARM=1) so
+    grids don't pay the ffmpeg/decode cost on first view."""
+    def loop():
+        while _scan_state.get("running"):
+            time.sleep(5)
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM media WHERE trashed_at IS NULL ORDER BY taken_at DESC"
+        ).fetchall()
+        conn.close()
+        made = 0
+        for r in rows:
+            p = thumb_path_for(r["id"])
+            if p.exists() and p.stat().st_size > 0:
+                continue
+            ensure_thumb(r)
+            made += 1
+        print(f"[thumbwarm] done, generated {made} thumbnails")
+    threading.Thread(target=loop, daemon=True, name="thumbwarm").start()
+
+
 def main() -> None:
     init_db()
     start_background_scan()
     start_purge_loop()
+    if os.environ.get("THUMB_WARM", "0").lower() in ("1", "true", "yes"):
+        start_thumb_warmer()
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 8000))
     print(f"[server] listening on http://{host}:{port}")
