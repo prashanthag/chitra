@@ -204,7 +204,13 @@ def extract_exif(path: Path, kind: str) -> dict:
         try:
             with Image.open(path) as im:
                 exif = im.getexif()
-                dt = exif.get(36867) or exif.get(306)
+                # DateTimeOriginal (36867) lives in the Exif sub-IFD, not the
+                # top-level directory; fall back to top-level DateTime (306).
+                try:
+                    sub = exif.get_ifd(34665)
+                except Exception:
+                    sub = {}
+                dt = sub.get(36867) or exif.get(36867) or exif.get(306)
                 if dt:
                     try:
                         out["taken_at"] = time.mktime(time.strptime(dt, "%Y:%m:%d %H:%M:%S"))
@@ -1351,12 +1357,35 @@ def _camera_label(make: str | None, model: str | None) -> str:
     return model or make or "Unknown device"
 
 
+_place_cache: dict = {}
+
+
+def _place_for(lat: float, lng: float) -> str | None:
+    """Offline reverse geocode to 'City, Region, CC' (reverse_geocoder pkg)."""
+    key = (round(lat, 3), round(lng, 3))
+    if key in _place_cache:
+        return _place_cache[key]
+    place = None
+    try:
+        import reverse_geocoder as rg
+        hit = rg.search((lat, lng), mode=1)[0]
+        place = ", ".join(
+            x for x in (hit.get("name"), hit.get("admin1"), hit.get("cc")) if x)
+    except Exception:
+        pass
+    _place_cache[key] = place
+    return place
+
+
 @app.get("/api/media/<mid>")
 def media_meta(mid: str):
     r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
     if not r:
         abort(404)
-    return jsonify(dict(r))
+    d = dict(r)
+    if d.get("lat") is not None and d.get("lng") is not None:
+        d["place"] = _place_for(d["lat"], d["lng"])
+    return jsonify(d)
 
 
 @app.get("/api/media/<mid>/thumb")

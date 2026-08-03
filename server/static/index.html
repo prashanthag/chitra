@@ -560,6 +560,7 @@ async function toggleInfo(){
     ['Type', [(d.kind||''), (d.ext||'').replace('.','').toUpperCase()].filter(Boolean).join(' · ')],
     ['Size', fmtSize(d.size)],
     ['Folder', d.album],
+    ['Place', d.place],
     ['Location', d.lat!=null&&d.lng!=null? `${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}` : null],
     ['File date', fmtDate(d.mtime)],
   ].filter(r=> r[1]);
