@@ -54,12 +54,17 @@ MEDIA_ROOT = Path(
 ).resolve()
 
 APP_DIR = Path(__file__).resolve().parent
-CACHE_DIR = APP_DIR / "cache"
+CACHE_DIR = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache"))
 THUMB_DIR = CACHE_DIR / "thumbs"
 DB_PATH = CACHE_DIR / "index.db"
 
-CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR.mkdir(exist_ok=True)
+
+# CHITRA_READONLY=1 serves the library for browsing only: every mutating
+# endpoint (upload, trash, delete, edit, tagging) returns 403. Rescan stays
+# allowed so a growing library can be re-indexed.
+READ_ONLY = os.environ.get("CHITRA_READONLY", "0").lower() in ("1", "true", "yes")
 
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".3gp"}
@@ -542,6 +547,13 @@ def serve_with_range(path: Path, mime: str | None) -> Response:
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024  # 8 GiB upload cap
+
+
+@app.before_request
+def _readonly_guard():
+    if (READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS")
+            and request.path != "/api/rescan"):
+        return jsonify({"ok": False, "error": "read-only library"}), 403
 
 
 @app.teardown_appcontext
