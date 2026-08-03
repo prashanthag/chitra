@@ -120,6 +120,12 @@
   #tagpop .newrow { display:flex; gap:6px; }
   #tagpop input { flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--txt);
           padding:7px 9px; border-radius:8px; font-size:13px; }
+  /* scroll date badge (Google-Photos style) */
+  #datebadge { position:fixed; top:74px; right:30px; z-index:60; background:rgba(22,22,26,.94);
+          border:1px solid var(--line); padding:8px 16px; border-radius:999px; font-size:13px;
+          font-weight:600; letter-spacing:.3px; opacity:0; transition:opacity .25s; pointer-events:none; }
+  #datebadge.on { opacity:1; }
+
   .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--panel2);
           border:1px solid var(--line); padding:10px 16px; border-radius:10px; font-size:13px;
           z-index:200; opacity:0; transition:opacity .2s; }
@@ -200,6 +206,7 @@
     </div>
   </div>
 </div>
+<div id="datebadge"></div>
 <div class="toast" id="toast"></div>
 <div id="dropzone">Drop photos &amp; videos to upload</div>
 
@@ -274,7 +281,8 @@ function tileHTML(m, idx){
   const fav = m.favorite? '<span class="fav">★</span>':'';
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
   const on = state.sel.has(m.id)? ' selected':'';
-  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}">
+  const ts = m.taken_at || m.mtime || '';
+  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
     <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
 }
 function appendTiles(items){
@@ -643,6 +651,24 @@ window.addEventListener('drop', e=>{
   e.preventDefault(); dragDepth=0; $('#dropzone').classList.remove('on');
   if(e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
 });
+
+// ---------- scroll date badge ----------
+let badgeTimer;
+document.querySelector('main').addEventListener('scroll', ()=>{
+  if($('#grid').style.display==='none') return;
+  const mainBox = document.querySelector('main').getBoundingClientRect();
+  const probe = document.elementFromPoint(mainBox.left + mainBox.width/2, mainBox.top + 90);
+  const tile = probe && probe.closest ? probe.closest('.tile') : null;
+  const ts = tile && parseFloat(tile.dataset.ts);
+  if(!ts) return;
+  const d = new Date(ts*1000);
+  if(isNaN(d)) return;
+  const b = $('#datebadge');
+  b.textContent = d.toLocaleString(undefined, {month:'long', year:'numeric'});
+  b.classList.add('on');
+  clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(()=> b.classList.remove('on'), 1400);
+}, {passive:true});
 
 // ---------- infinite scroll ----------
 io = new IntersectionObserver(entries=>{
