@@ -842,21 +842,21 @@ def _batch_ids() -> list[str]:
 def batch_trash():
     ids = _batch_ids()
     now = time.time()
-    db().executemany(
+    cur = db().executemany(
         "UPDATE media SET trashed_at = ? WHERE id = ?", [(now, i) for i in ids]
     )
     db().commit()
-    return jsonify({"ok": True, "count": len(ids)})
+    return jsonify({"ok": True, "count": cur.rowcount})
 
 
 @app.post("/api/media/batch_restore")
 def batch_restore():
     ids = _batch_ids()
-    db().executemany(
+    cur = db().executemany(
         "UPDATE media SET trashed_at = NULL WHERE id = ?", [(i,) for i in ids]
     )
     db().commit()
-    return jsonify({"ok": True, "count": len(ids)})
+    return jsonify({"ok": True, "count": cur.rowcount})
 
 
 @app.post("/api/media/batch_delete")
