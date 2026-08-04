@@ -533,7 +533,20 @@ function renderViewer(){
   const m = curItem(); if(!m) return;
   const stage = $('#stage');
   if(m.kind==='video'){
-    stage.innerHTML = `<video controls autoplay playsinline src="/api/media/${m.id}/stream.mp4"></video>`;
+    // Safari needs a seekable (Range) source: serve the original for native
+    // containers and fall back to the live transcode if it can't decode it.
+    const nat = ['.mp4','.mov','.m4v'].includes(m.ext);
+    const primary = nat? `/api/media/${m.id}/full` : `/api/media/${m.id}/stream.mp4`;
+    stage.innerHTML = `<video controls autoplay playsinline src="${primary}"></video>`;
+    if(nat){
+      const v = stage.querySelector('video');
+      v.addEventListener('error', ()=>{
+        if(v.dataset.fb) return;
+        v.dataset.fb = 1;
+        v.src = `/api/media/${m.id}/stream.mp4`;
+        v.play().catch(()=>{});
+      });
+    }
   }else{
     const as = (m.ext==='.heic'||m.ext==='.heif')? '?as=jpeg':'';
     stage.innerHTML = `<img src="/api/media/${m.id}/full${as}"/>`;
