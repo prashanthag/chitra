@@ -163,6 +163,10 @@
     <div class="item" data-view="cameras"><span class="ic">▣</span> Cameras</div>
     <div class="item" data-view="videos"><span class="ic">▷</span> Videos</div>
     <div class="sep"></div>
+    <div class="label">Unknown date</div>
+    <div class="item" data-view="unknown-photos"><span class="ic">▦</span> Photos</div>
+    <div class="item" data-view="unknown-videos"><span class="ic">▷</span> Videos</div>
+    <div class="sep"></div>
     <div class="item" data-view="trash"><span class="ic">🗑</span> Trash</div>
   </nav>
 
@@ -260,6 +264,11 @@ function viewParams(p){
   if(v==='favorites') p.set('favorites','1');
   if(v==='videos') p.set('kind','video');
   if(v==='trash') p.set('trashed','1');
+  // Photos/Videos show only dated items; undated live in the Unknown section.
+  if(v==='photos' && !state.params.album && !state.params.camera) p.set('dated','1');
+  if(v==='videos') p.set('dated','1');
+  if(v==='unknown-photos'){ p.set('undated','1'); p.set('kind','photo'); }
+  if(v==='unknown-videos'){ p.set('undated','1'); p.set('kind','video'); }
   Object.entries(state.params).forEach(([k,val])=> p.set(k,val));
   return p;
 }
@@ -301,7 +310,7 @@ function appendTiles(items){
   // Tile index = its position in state.items, derived from how many tiles already exist.
   const grid = $('#grid');
   const offset = grid.querySelectorAll('.tile').length;
-  const withHeaders = state.view !== 'search';
+  const withHeaders = state.view !== 'search' && !state.view.startsWith('unknown');
   let html = '';
   items.forEach((m,i)=>{
     if(withHeaders){
@@ -702,7 +711,7 @@ document.querySelector('main').addEventListener('scroll', ()=>{
 
 // ---------- infinite scroll ----------
 io = new IntersectionObserver(entries=>{
-  if(entries[0].isIntersecting && ['photos','favorites','videos','trash'].includes(state.view)) loadGrid(false);
+  if(entries[0].isIntersecting && ['photos','favorites','videos','trash','unknown-photos','unknown-videos'].includes(state.view)) loadGrid(false);
 }, {rootMargin:'600px'});
 io.observe($('#sentinel'));
 

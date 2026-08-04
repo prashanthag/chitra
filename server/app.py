@@ -695,6 +695,10 @@ def list_media():
     if kind in ("photo", "video"):
         where.append("m.kind = ?")
         args.append(kind)
+    if request.args.get("dated") in ("1", "true"):
+        where.append("m.taken_at IS NOT NULL")
+    if request.args.get("undated") in ("1", "true"):
+        where.append("m.taken_at IS NULL")
     if album:
         where.append("m.album = ?")
         args.append(album)
