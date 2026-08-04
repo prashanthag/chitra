@@ -46,6 +46,10 @@
 
   #grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
           gap:4px; padding:8px; }
+  .mhead { grid-column: 1 / -1; padding:20px 8px 6px; font-size:16px; font-weight:600;
+          position:sticky; top:0; z-index:5;
+          background:linear-gradient(var(--bg) 72%, transparent); }
+  .mhead:first-child { padding-top:8px; }
   .tile { position:relative; aspect-ratio:1; background:var(--panel2); cursor:pointer;
           overflow:hidden; border-radius:4px; }
   .tile img { width:100%; height:100%; object-fit:cover; display:block; transition:transform .2s; }
@@ -236,6 +240,7 @@ function switchView(view, params, fromPop){
   if(!fromPop) history.pushState({view, params: params||{}}, '');
   state.gen++; state.loading=false;
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
+  state.lastMonth = '';
   state.sel.clear(); updateSelBar();
   setActive(view);
   $('#searchbar').classList.toggle('on', view==='search');
@@ -285,17 +290,35 @@ function tileHTML(m, idx){
   return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
     <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
 }
+function monthKey(m){
+  const ts = m.taken_at || m.mtime;
+  if(!ts) return '';
+  const d = new Date(ts*1000);
+  return isNaN(d)? '' : d.toLocaleString(undefined, {month:'long', year:'numeric'});
+}
 function appendTiles(items){
   // Tile index = its position in state.items, derived from how many tiles already exist.
-  const offset = $('#grid').children.length;
+  const grid = $('#grid');
+  const offset = grid.querySelectorAll('.tile').length;
+  const withHeaders = state.view !== 'search';
+  let html = '';
+  items.forEach((m,i)=>{
+    if(withHeaders){
+      const mk = monthKey(m);
+      if(mk && mk !== state.lastMonth){ state.lastMonth = mk; html += `<div class="mhead">${esc(mk)}</div>`; }
+    }
+    html += tileHTML(m, offset+i);
+  });
   const frag = document.createElement('div');
-  frag.innerHTML = items.map((m,i)=> tileHTML(m, offset+i)).join('');
+  frag.innerHTML = html;
   [...frag.children].forEach(el=>{
-    el.addEventListener('click', ev=>{
-      if(ev.target.classList.contains('sel') || state.sel.size){ toggleSel(el); return; }
-      openViewer(parseInt(el.dataset.idx,10));
-    });
-    $('#grid').appendChild(el);
+    if(el.classList.contains('tile')){
+      el.addEventListener('click', ev=>{
+        if(ev.target.classList.contains('sel') || state.sel.size){ toggleSel(el); return; }
+        openViewer(parseInt(el.dataset.idx,10));
+      });
+    }
+    grid.appendChild(el);
   });
 }
 
@@ -444,6 +467,7 @@ async function loadCameras(){
 // Show an arbitrary list of items (person / cluster results) as a grid
 function showCollection(title, items){
   state.view='collection'; state.items=[]; state.done=true; state.loading=false; state.params={};
+  state.lastMonth = '';
   state.sel.clear(); updateSelBar();
   setActive('');
   $('#cards').style.display='none'; $('#grid').style.display='grid'; $('#grid').innerHTML='';
