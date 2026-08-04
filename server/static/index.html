@@ -193,6 +193,7 @@
   <div class="top">
     <button class="iconbtn" onclick="closeViewer()">✕</button>
     <span class="grow"></span>
+    <button class="iconbtn" id="vShare" title="Share" onclick="shareCurrent()">⤴</button>
     <button class="iconbtn" id="vInfo" title="Info" onclick="toggleInfo()">ⓘ</button>
     <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
     <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
@@ -586,6 +587,35 @@ async function trashCurrent(){
   if(!confirm('Move this item to trash?')) return;
   await api(`/api/media/${m.id}/trash`, {method:'POST'});
   toast('Moved to trash'); closeViewer(); switchView(state.view==='collection'?'photos':state.view);
+}
+
+// ---------- Share ----------
+async function shareCurrent(){
+  const m = curItem(); if(!m) return;
+  toast('Preparing…');
+  try{
+    // HEIC → JPEG so every target app can display it.
+    const as = (m.ext==='.heic'||m.ext==='.heif')? '?as=jpeg' : '';
+    const name = as? m.name.replace(/\.hei[cf]$/i, '.jpg') : m.name;
+    const r = await fetch(`/api/media/${m.id}/full${as}`);
+    if(!r.ok) throw new Error(r.status);
+    const blob = await r.blob();
+    const file = new File([blob], name, {type: blob.type || m.mime || 'application/octet-stream'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{
+        await navigator.share({files:[file], title:name});
+        return;
+      }catch(e){
+        if(e.name==='AbortError') return;      // user closed the sheet
+        // NotAllowedError etc. (e.g. gesture expired on a big video) → download
+      }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 30000);
+    toast('Saved to Downloads — share it from there');
+  }catch(e){ toast('Share failed'); }
 }
 
 // ---------- Info panel ----------
