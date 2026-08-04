@@ -286,15 +286,16 @@ function tileHTML(m, idx){
   const fav = m.favorite? '<span class="fav">★</span>':'';
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
   const on = state.sel.has(m.id)? ' selected':'';
-  const ts = m.taken_at || m.mtime || '';
+  const ts = m.taken_at || '';
   return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
     <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
 }
 function monthKey(m){
-  const ts = m.taken_at || m.mtime;
-  if(!ts) return '';
-  const d = new Date(ts*1000);
-  return isNaN(d)? '' : d.toLocaleString(undefined, {month:'long', year:'numeric'});
+  // Label only from the real capture date — a missing date is "unknown",
+  // never the file date (which is recovery/copy time, not when it was shot).
+  if(!m.taken_at) return 'Date unknown';
+  const d = new Date(m.taken_at*1000);
+  return isNaN(d)? 'Date unknown' : d.toLocaleString(undefined, {month:'long', year:'numeric'});
 }
 function appendTiles(items){
   // Tile index = its position in state.items, derived from how many tiles already exist.
@@ -684,12 +685,16 @@ document.querySelector('main').addEventListener('scroll', ()=>{
   const mainBox = document.querySelector('main').getBoundingClientRect();
   const probe = document.elementFromPoint(mainBox.left + mainBox.width/2, mainBox.top + 90);
   const tile = probe && probe.closest ? probe.closest('.tile') : null;
-  const ts = tile && parseFloat(tile.dataset.ts);
-  if(!ts) return;
-  const d = new Date(ts*1000);
-  if(isNaN(d)) return;
+  if(!tile) return;
+  const ts = parseFloat(tile.dataset.ts);
   const b = $('#datebadge');
-  b.textContent = d.toLocaleString(undefined, {month:'long', year:'numeric'});
+  if(ts){
+    const d = new Date(ts*1000);
+    if(isNaN(d)) return;
+    b.textContent = d.toLocaleString(undefined, {month:'long', year:'numeric'});
+  }else{
+    b.textContent = 'Date unknown';
+  }
   b.classList.add('on');
   clearTimeout(badgeTimer);
   badgeTimer = setTimeout(()=> b.classList.remove('on'), 1400);
