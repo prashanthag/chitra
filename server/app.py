@@ -829,11 +829,15 @@ def _load_clip_index():
         import torch
     except Exception:
         return False
-    cur = db().execute(
-        "SELECT id, clip_embedding FROM media "
-        "WHERE clip_embedding IS NOT NULL AND length(clip_embedding) > 0 "
-        "AND trashed_at IS NULL"
-    )
+    try:
+        cur = db().execute(
+            "SELECT id, clip_embedding FROM media "
+            "WHERE clip_embedding IS NOT NULL AND length(clip_embedding) > 0 "
+            "AND trashed_at IS NULL"
+        )
+    except sqlite3.OperationalError:
+        # clip_embedding column only exists once clip_indexer.py has run.
+        return False
     ids, embs = [], []
     for r in cur.fetchall():
         ids.append(r["id"])
