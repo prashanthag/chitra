@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-enum class Filter { ALL, PHOTOS, VIDEOS, FAVORITES, ARCHIVED, TRASH }
+enum class Filter { ALL, PHOTOS, VIDEOS, FAVORITES, ARCHIVED, UNKNOWN, TRASH }
 
 data class GalleryState(
     val items: List<MediaItem> = emptyList(),
@@ -79,6 +79,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 val trashed = if (s.filter == Filter.TRASH) 1 else null
                 val archived = if (s.filter == Filter.ARCHIVED) 1 else null
                 val q = s.query.takeIf { it.isNotBlank() }
+                // Main feeds show only items with a real capture date; the
+                // Unknown chip shows the rest (mirrors the web client).
+                val undated = if (s.filter == Filter.UNKNOWN) 1 else null
+                val dated = if (q == null && s.filter in listOf(Filter.ALL, Filter.PHOTOS, Filter.VIDEOS)) 1 else null
                 val resp = if (s.semantic && q != null) {
                     // Semantic search returns top-k by CLIP similarity (single page).
                     val r = api.searchSemantic(q = q, topK = 200)
@@ -88,6 +92,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                     page = nextPage, perPage = 80,
                     kind = kind, favorites = fav, q = q,
                     trashed = trashed, archived = archived,
+                    dated = dated, undated = undated,
                 )
                 if (resp.items.size < resp.perPage) endReached = true
                 _state.value = _state.value.copy(

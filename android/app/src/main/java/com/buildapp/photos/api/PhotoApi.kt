@@ -28,6 +28,8 @@ interface PhotoApi {
         @Query("month") month: Int? = null,
         @Query("trashed") trashed: Int? = null,
         @Query("archived") archived: Int? = null,
+        @Query("dated") dated: Int? = null,
+        @Query("undated") undated: Int? = null,
     ): MediaPage
 
     @GET("api/albums")
