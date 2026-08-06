@@ -68,9 +68,11 @@ fun ViewerDialog(
             if (item.kind == "video") {
                 VideoPlayer(url = Urls.stream(serverUrl, item.id))
             } else {
-                val needsTranscode = item.ext.equals(".heic", true) || item.ext.equals(".heif", true)
+                // Always view via server-side JPEG conversion: flattens HEIC,
+                // TIFF and Apple MPO (multi-frame JPEGs render black in some
+                // Android decoders). Sharing still sends the original file.
                 AsyncImage(
-                    model = Urls.full(serverUrl, item.id, asJpeg = needsTranscode),
+                    model = Urls.full(serverUrl, item.id, asJpeg = true),
                     contentDescription = item.name,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
