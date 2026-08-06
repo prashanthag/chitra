@@ -1,6 +1,7 @@
 package com.buildapp.photos.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -389,6 +390,7 @@ private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
+            .horizontalScroll(androidx.compose.foundation.rememberScrollState())
             .padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -402,7 +404,7 @@ private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
     }
 }
 
-private fun monthLabel(epoch: Double?): String {
+internal fun monthLabel(epoch: Double?): String {
     if (epoch == null || epoch <= 0) return "Undated"
     val cal = java.util.Calendar.getInstance().apply { timeInMillis = (epoch * 1000).toLong() }
     val months = arrayOf(
@@ -413,7 +415,7 @@ private fun monthLabel(epoch: Double?): String {
 }
 
 @Composable
-private fun Gallery(
+internal fun Gallery(
     items: List<MediaItem>,
     serverUrl: String,
     onItemClick: (MediaItem) -> Unit,

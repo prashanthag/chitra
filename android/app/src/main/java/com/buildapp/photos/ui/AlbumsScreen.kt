@@ -142,12 +142,13 @@ fun AlbumMediaScreen(
     onItemClick: (MediaItem) -> Unit,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
-    var items by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var page by remember { mutableStateOf(0) }
-    var loading by remember { mutableStateOf(false) }
-    var endReached by remember { mutableStateOf(false) }
+    var items by remember(album.album) { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var page by remember(album.album) { mutableStateOf(0) }
+    var loading by remember(album.album) { mutableStateOf(false) }
+    var endReached by remember(album.album) { mutableStateOf(false) }
+    var loadTick by remember(album.album) { mutableStateOf(0) }
 
-    LaunchedEffect(album.album) {
+    LaunchedEffect(album.album, loadTick) {
         if (loading || endReached) return@LaunchedEffect
         loading = true
         try {
@@ -170,31 +171,14 @@ fun AlbumMediaScreen(
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 110.dp),
-                contentPadding = PaddingValues(2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                items(items, key = { it.id }) { m ->
-                    Box(
-                        Modifier
-                            .aspectRatio(1f)
-                            .background(Color(0xFF1A1A1C))
-                            .clickable { onItemClick(m) },
-                    ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(Urls.thumb(serverUrl, m.id))
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = m.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                }
-            }
+            // Same sectioned grid as the main gallery: month/year headers and
+            // infinite scroll through every page of the album.
+            Gallery(
+                items = items,
+                serverUrl = serverUrl,
+                onItemClick = onItemClick,
+                onLoadMore = { if (!loading && !endReached) loadTick++ },
+            )
         }
     }
 }

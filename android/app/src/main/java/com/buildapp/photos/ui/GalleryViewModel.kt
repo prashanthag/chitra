@@ -143,6 +143,13 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+
+    private fun actionFailed(e: Exception) {
+        val msg = if (e.message?.contains("403") == true)
+            "Rejected: library is read-only" else "Action failed: ${e.message}"
+        android.widget.Toast.makeText(getApplication(), msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     fun trash(item: MediaItem) {
         val api = api ?: return
         viewModelScope.launch {
@@ -152,7 +159,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                     items = _state.value.items.filterNot { it.id == item.id },
                     total = _state.value.total - 1,
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) { actionFailed(e) }
         }
     }
 
@@ -165,7 +172,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                     items = _state.value.items.filterNot { it.id == item.id },
                     total = _state.value.total - 1,
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) { actionFailed(e) }
         }
     }
 
@@ -177,14 +184,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(
                     items = _state.value.items.filterNot { it.id == item.id },
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) { actionFailed(e) }
         }
     }
 
     fun rotate(item: MediaItem, degrees: Int = 90) {
         val api = api ?: return
         viewModelScope.launch {
-            try { api.rotate(item.id, degrees) } catch (_: Exception) {}
+            try { api.rotate(item.id, degrees) } catch (e: Exception) { actionFailed(e) }
         }
     }
 

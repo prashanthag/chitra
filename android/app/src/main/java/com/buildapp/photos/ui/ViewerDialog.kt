@@ -15,16 +15,23 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,10 +77,14 @@ fun ViewerDialog(
                 )
             }
             val context = LocalContext.current
+            var showInfo by remember(item.id) { mutableStateOf(false) }
             Row(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
             ) {
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
+                IconButton(onClick = { showInfo = !showInfo }) {
+                    Icon(Icons.Default.Info, contentDescription = "Info", tint = Color.White)
+                }
                 IconButton(onClick = {
                     // Download the actual file and hand it to the share sheet,
                     // so WhatsApp & co. receive the photo/video itself (a LAN
@@ -143,6 +154,34 @@ fun ViewerDialog(
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                }
+            }
+            if (showInfo) {
+                androidx.compose.foundation.layout.Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(16.dp)
+                        .background(Color(0xDD16161A), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                        .padding(16.dp),
+                ) {
+                    val rows = buildList {
+                        add("Name" to item.name)
+                        item.takenAt?.takeIf { it > 0 }?.let {
+                            add("Taken" to java.text.SimpleDateFormat("MMM d, yyyy h:mm a", java.util.Locale.getDefault())
+                                .format(java.util.Date((it * 1000).toLong())))
+                        } ?: add("Taken" to "Date unknown")
+                        if (item.width != null && item.height != null) add("Resolution" to "${item.width} × ${item.height}")
+                        item.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
+                        add("Type" to "${item.kind} · ${item.ext.removePrefix(".").uppercase()}")
+                        item.album?.let { add("Folder" to it) }
+                    }
+                    rows.forEach { (k, v) ->
+                        androidx.compose.foundation.layout.Row(Modifier.padding(vertical = 3.dp)) {
+                            Text(k, color = Color(0xFF9A9AA2), fontSize = 13.sp,
+                                modifier = Modifier.widthIn(min = 90.dp))
+                            Text(v, color = Color.White, fontSize = 13.sp)
+                        }
+                    }
                 }
             }
         }
