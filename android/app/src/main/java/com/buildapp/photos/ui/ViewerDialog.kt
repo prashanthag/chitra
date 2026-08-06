@@ -75,27 +75,37 @@ fun ViewerDialog(
             ) {
                 val scope = androidx.compose.runtime.rememberCoroutineScope()
                 IconButton(onClick = {
-                    // Generate a public share token and share that URL (works
-                    // from anyone on the LAN/internet, no auth needed).
+                    // Download the actual file and hand it to the share sheet,
+                    // so WhatsApp & co. receive the photo/video itself (a LAN
+                    // URL would be dead outside this network).
                     scope.launch {
-                        val link = try {
-                            val r = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                com.buildapp.photos.api.PhotoApi.create(serverUrl).share(item.id)
+                        try {
+                            val heic = item.ext.equals(".heic", true) || item.ext.equals(".heif", true)
+                            val url = Urls.full(serverUrl, item.id, asJpeg = heic)
+                            val name = if (heic) item.name.replace(Regex("\\.hei[cf]$", RegexOption.IGNORE_CASE), ".jpg") else item.name
+                            val file = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                val dir = java.io.File(context.cacheDir, "share").apply { mkdirs() }
+                                val f = java.io.File(dir, name)
+                                java.net.URL(url).openStream().use { input ->
+                                    f.outputStream().use { input.copyTo(it) }
+                                }
+                                f
                             }
-                            com.buildapp.photos.api.Urls.shareLink(serverUrl, r.token)
-                        } catch (_: Exception) {
-                            if (item.kind == "video") Urls.stream(serverUrl, item.id)
-                            else Urls.full(serverUrl, item.id,
-                                asJpeg = item.ext.equals(".heic", true) || item.ext.equals(".heif", true))
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context, "com.buildapp.photos.fileprovider", file)
+                            val mime = item.mime
+                                ?: if (item.kind == "video") "video/*" else "image/*"
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = if (heic) "image/jpeg" else mime
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share via").apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            })
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(context, "Share failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                         }
-                        val send = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, link)
-                            putExtra(Intent.EXTRA_SUBJECT, item.name)
-                        }
-                        context.startActivity(Intent.createChooser(send, "Share via").apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        })
                     }
                 }) {
                     Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White)

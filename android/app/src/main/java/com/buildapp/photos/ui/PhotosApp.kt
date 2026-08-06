@@ -100,6 +100,22 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // System back walks the UI hierarchy (viewer → overlays → sub-screen →
+    // gallery) instead of killing the app; only exits from the home gallery.
+    androidx.activity.compose.BackHandler(
+        enabled = selected != null || showSettings || showSearch || route != Route.Gallery
+    ) {
+        when {
+            selected != null -> selected = null
+            showSettings -> showSettings = false
+            showSearch -> showSearch = false
+            route is Route.Editor -> route = Route.Gallery
+            route is Route.ClusterMedia -> route = Route.People
+            route is Route.AlbumMedia -> route = Route.Albums
+            route != Route.Gallery -> route = Route.Gallery
+        }
+    }
     val pickMedia = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
     ) { uris ->
