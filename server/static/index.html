@@ -557,7 +557,10 @@ function renderViewer(){
       });
     }
   }else{
-    const as = (m.ext==='.heic'||m.ext==='.heif')? '?as=jpeg':'';
+    // Browsers render JPEG/PNG/GIF/WebP natively; everything else gets
+    // converted server-side.
+    const native = ['.jpg','.jpeg','.png','.gif','.webp'].includes(m.ext);
+    const as = native? '' : '?as=jpeg';
     stage.innerHTML = `<img src="/api/media/${m.id}/full${as}"/>`;
   }
   $('#vFav').classList.toggle('on', !!m.favorite);

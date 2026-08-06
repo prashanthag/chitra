@@ -1469,8 +1469,8 @@ def media_full(mid: str):
     src = Path(r["path"])
     if not src.exists():
         abort(404)
-    # For HEIC, convert on the fly to JPEG for clients that can't render it
-    if r["ext"] in (".heic", ".heif") and request.args.get("as") == "jpeg":
+    # Convert non-browser-native formats (HEIC, TIFF, BMP…) to JPEG on the fly
+    if r["kind"] == "photo" and request.args.get("as") == "jpeg":
         try:
             with Image.open(src) as im:
                 im = ImageOps.exif_transpose(im).convert("RGB")
