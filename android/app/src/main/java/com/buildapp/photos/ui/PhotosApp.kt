@@ -94,7 +94,8 @@ private sealed interface Route {
 @Composable
 fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     val state by vm.state.collectAsState()
-    var selected by remember { mutableStateOf<MediaItem?>(null) }
+    var liveViewerIndex by remember { mutableStateOf<Int?>(null) }
+    var staticViewer by remember { mutableStateOf<Pair<List<MediaItem>, Int>?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var route by remember { mutableStateOf<Route>(Route.Gallery) }
@@ -105,10 +106,11 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     // System back walks the UI hierarchy (viewer → overlays → sub-screen →
     // gallery) instead of killing the app; only exits from the home gallery.
     androidx.activity.compose.BackHandler(
-        enabled = selected != null || showSettings || showSearch || route != Route.Gallery
+        enabled = liveViewerIndex != null || staticViewer != null || showSettings || showSearch || route != Route.Gallery
     ) {
         when {
-            selected != null -> selected = null
+            liveViewerIndex != null -> liveViewerIndex = null
+            staticViewer != null -> staticViewer = null
             showSettings -> showSettings = false
             showSearch -> showSearch = false
             route is Route.Editor -> route = Route.Gallery
@@ -151,13 +153,14 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 cluster = r.cluster,
                 onBack = { route = Route.People },
-                onItemClick = { selected = it },
+                onItemClick = { l, i -> staticViewer = l to i },
             )
-            selected?.let { item ->
+            staticViewer?.let { (list, idx) ->
                 ViewerDialog(
-                    item = item,
+                    items = list,
+                    initialIndex = idx,
                     serverUrl = state.serverUrl,
-                    onDismiss = { selected = null },
+                    onDismiss = { staticViewer = null },
                     onToggleFavorite = { vm.toggleFavorite(it) },
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
@@ -179,13 +182,14 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 album = r.album,
                 onBack = { route = Route.Albums },
-                onItemClick = { selected = it },
+                onItemClick = { l, i -> staticViewer = l to i },
             )
-            selected?.let { item ->
+            staticViewer?.let { (list, idx) ->
                 ViewerDialog(
-                    item = item,
+                    items = list,
+                    initialIndex = idx,
                     serverUrl = state.serverUrl,
-                    onDismiss = { selected = null },
+                    onDismiss = { staticViewer = null },
                     onToggleFavorite = { vm.toggleFavorite(it) },
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
@@ -199,15 +203,16 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 onBack = { route = Route.Gallery },
                 onMarkerClick = { loc ->
-                    val hit = state.items.firstOrNull { it.id == loc.id }
-                    if (hit != null) selected = hit
+                    val hit = state.items.indexOfFirst { it.id == loc.id }
+                    if (hit >= 0) liveViewerIndex = hit
                 },
             )
-            selected?.let { item ->
+            liveViewerIndex?.let { idx ->
                 ViewerDialog(
-                    item = item,
+                    items = state.items,
+                    initialIndex = idx,
                     serverUrl = state.serverUrl,
-                    onDismiss = { selected = null },
+                    onDismiss = { liveViewerIndex = null },
                     onToggleFavorite = { vm.toggleFavorite(it) },
                 )
             }
@@ -284,7 +289,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             }
             FilterRow(current = state.filter, onSelect = { vm.setFilter(it) })
             state.memories?.takeIf { it.groups.isNotEmpty() }?.let { mem ->
-                MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { selected = it })
+                MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { staticViewer = listOf(it) to 0 })
             }
             Box(Modifier.fillMaxSize()) {
                 when {
@@ -303,7 +308,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     else -> Gallery(
                         items = state.items,
                         serverUrl = state.serverUrl,
-                        onItemClick = { selected = it },
+                        onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
                         onLoadMore = { vm.loadNext() },
                     )
                 }
@@ -311,18 +316,27 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         }
     }
 
-    selected?.let { item ->
-        val live = state.items.firstOrNull { it.id == item.id } ?: item
+    liveViewerIndex?.let { idx ->
         ViewerDialog(
-            item = live,
+            items = state.items,
+            initialIndex = idx,
             serverUrl = state.serverUrl,
-            onDismiss = { selected = null },
+            onDismiss = { liveViewerIndex = null },
             onToggleFavorite = { vm.toggleFavorite(it) },
             onTrash = { vm.trash(it) },
             onArchive = { vm.archive(it) },
             onRestore = { vm.restore(it) },
             onRotate = { vm.rotate(it) },
-            onEdit = { route = Route.Editor(it); selected = null },
+            onEdit = { route = Route.Editor(it); liveViewerIndex = null },
+        )
+    }
+    staticViewer?.let { (list, idx) ->
+        ViewerDialog(
+            items = list,
+            initialIndex = idx,
+            serverUrl = state.serverUrl,
+            onDismiss = { staticViewer = null },
+            onToggleFavorite = { vm.toggleFavorite(it) },
         )
     }
 

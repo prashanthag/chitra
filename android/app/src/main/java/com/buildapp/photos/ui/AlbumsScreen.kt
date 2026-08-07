@@ -139,7 +139,7 @@ fun AlbumMediaScreen(
     serverUrl: String,
     album: Album,
     onBack: () -> Unit,
-    onItemClick: (MediaItem) -> Unit,
+    onItemClick: (List<MediaItem>, Int) -> Unit,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     var items by remember(album.album) { mutableStateOf<List<MediaItem>>(emptyList()) }
@@ -176,7 +176,9 @@ fun AlbumMediaScreen(
             Gallery(
                 items = items,
                 serverUrl = serverUrl,
-                onItemClick = onItemClick,
+                onItemClick = { m ->
+                    onItemClick(items, items.indexOfFirst { it.id == m.id }.coerceAtLeast(0))
+                },
                 onLoadMore = { if (!loading && !endReached) loadTick++ },
             )
         }

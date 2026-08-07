@@ -6,9 +6,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
@@ -21,16 +26,15 @@ import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Unarchive
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
-import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -50,7 +55,8 @@ import com.buildapp.photos.api.Urls
 
 @Composable
 fun ViewerDialog(
-    item: MediaItem,
+    items: List<MediaItem>,
+    initialIndex: Int,
     serverUrl: String,
     onDismiss: () -> Unit,
     onToggleFavorite: (MediaItem) -> Unit,
@@ -60,37 +66,54 @@ fun ViewerDialog(
     onRotate: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
 ) {
+    if (items.isEmpty()) { onDismiss(); return }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false),
     ) {
+        val pagerState = rememberPagerState(
+            initialPage = initialIndex.coerceIn(0, items.size - 1),
+        ) { items.size }
+        val item = items[pagerState.currentPage.coerceIn(0, items.size - 1)]
+
         Box(Modifier.fillMaxSize().background(Color(0xEE000000))) {
-            if (item.kind == "video") {
-                VideoPlayer(url = Urls.stream(serverUrl, item.id))
-            } else {
-                // Always view via server-side JPEG conversion: flattens HEIC,
-                // TIFF and Apple MPO (multi-frame JPEGs render black in some
-                // Android decoders). Sharing still sends the original file.
-                AsyncImage(
-                    model = Urls.full(serverUrl, item.id, asJpeg = true),
-                    contentDescription = item.name,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
-                )
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                val m = items[page]
+                if (m.kind == "video") {
+                    // Only the settled page gets a live player, so swiping
+                    // never spins up multiple decoders.
+                    if (pagerState.settledPage == page) {
+                        VideoPlayer(url = Urls.stream(serverUrl, m.id))
+                    } else {
+                        Box(Modifier.fillMaxSize().background(Color.Black)) {
+                            AsyncImage(
+                                model = Urls.thumb(serverUrl, m.id),
+                                contentDescription = m.name,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                } else {
+                    // Server-side JPEG conversion flattens HEIC/TIFF/MPO.
+                    AsyncImage(
+                        model = Urls.full(serverUrl, m.id, asJpeg = true),
+                        contentDescription = m.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
+
             val context = LocalContext.current
             var showInfo by remember(item.id) { mutableStateOf(false) }
-            Row(
-                Modifier.align(Alignment.TopEnd).padding(8.dp),
-            ) {
-                val scope = androidx.compose.runtime.rememberCoroutineScope()
+            Row(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+                val scope = rememberCoroutineScope()
                 IconButton(onClick = { showInfo = !showInfo }) {
                     Icon(Icons.Default.Info, contentDescription = "Info", tint = Color.White)
                 }
                 IconButton(onClick = {
-                    // Download the actual file and hand it to the share sheet,
-                    // so WhatsApp & co. receive the photo/video itself (a LAN
-                    // URL would be dead outside this network).
+                    // Download the actual file and hand it to the share sheet.
                     scope.launch {
                         try {
                             val heic = item.ext.equals(".heic", true) || item.ext.equals(".heif", true)
@@ -111,8 +134,6 @@ fun ViewerDialog(
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = if (heic) "image/jpeg" else mime
                                 putExtra(Intent.EXTRA_STREAM, uri)
-                                // ClipData carries the URI grant through the
-                                // chooser to whichever app the user picks.
                                 clipData = android.content.ClipData.newRawUri("", uri)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
@@ -162,11 +183,11 @@ fun ViewerDialog(
                 }
             }
             if (showInfo) {
-                androidx.compose.foundation.layout.Column(
+                Column(
                     Modifier
                         .align(Alignment.BottomStart)
                         .padding(16.dp)
-                        .background(Color(0xDD16161A), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                        .background(Color(0xDD16161A), RoundedCornerShape(12.dp))
                         .padding(16.dp),
                 ) {
                     val rows = buildList {
@@ -181,7 +202,7 @@ fun ViewerDialog(
                         item.album?.let { add("Folder" to it) }
                     }
                     rows.forEach { (k, v) ->
-                        androidx.compose.foundation.layout.Row(Modifier.padding(vertical = 3.dp)) {
+                        Row(Modifier.padding(vertical = 3.dp)) {
                             Text(k, color = Color(0xFF9A9AA2), fontSize = 13.sp,
                                 modifier = Modifier.widthIn(min = 90.dp))
                             Text(v, color = Color.White, fontSize = 13.sp)
@@ -196,14 +217,14 @@ fun ViewerDialog(
 @Composable
 private fun VideoPlayer(url: String) {
     val context = LocalContext.current
-    val exoPlayer = remember {
+    val exoPlayer = remember(url) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(ExoMediaItem.fromUri(url))
             prepare()
             playWhenReady = true
         }
     }
-    DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
+    DisposableEffect(url) { onDispose { exoPlayer.release() } }
     AndroidView(
         factory = { ctx ->
             PlayerView(ctx).apply {
@@ -215,6 +236,7 @@ private fun VideoPlayer(url: String) {
                 )
             }
         },
+        update = { it.player = exoPlayer },
         modifier = Modifier.fillMaxSize(),
     )
 }

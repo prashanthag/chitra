@@ -160,7 +160,7 @@ fun ClusterMediaScreen(
     serverUrl: String,
     cluster: Cluster,
     onBack: () -> Unit,
-    onItemClick: (MediaItem) -> Unit,
+    onItemClick: (List<MediaItem>, Int) -> Unit,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     var items by remember { mutableStateOf<List<MediaItem>?>(null) }
@@ -197,7 +197,10 @@ fun ClusterMediaScreen(
                             Modifier
                                 .aspectRatio(1f)
                                 .background(Color(0xFF1A1A1C))
-                                .clickable { onItemClick(m) },
+                                .clickable {
+                                    val list = items!!
+                                    onItemClick(list, list.indexOfFirst { it.id == m.id }.coerceAtLeast(0))
+                                },
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current)
