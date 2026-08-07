@@ -139,7 +139,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                         if (it.id == item.id) it.copy(favorite = if (r.favorite) 1 else 0) else it
                     }
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) { actionFailed(e) }
         }
     }
 

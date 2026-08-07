@@ -620,7 +620,9 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024  # 8 GiB upload cap
 @app.before_request
 def _readonly_guard():
     if (READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS")
-            and request.path != "/api/rescan"):
+            and request.path != "/api/rescan"
+            # favorites only touch the index DB, never media files
+            and not request.path.endswith("/favorite")):
         return jsonify({"ok": False, "error": "read-only library"}), 403
 
 

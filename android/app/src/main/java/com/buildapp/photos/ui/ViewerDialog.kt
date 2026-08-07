@@ -111,6 +111,9 @@ fun ViewerDialog(
                             val send = Intent(Intent.ACTION_SEND).apply {
                                 type = if (heic) "image/jpeg" else mime
                                 putExtra(Intent.EXTRA_STREAM, uri)
+                                // ClipData carries the URI grant through the
+                                // chooser to whichever app the user picks.
+                                clipData = android.content.ClipData.newRawUri("", uri)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
                             context.startActivity(Intent.createChooser(send, "Share via").apply {
