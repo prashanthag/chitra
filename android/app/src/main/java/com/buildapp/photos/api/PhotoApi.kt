@@ -16,6 +16,9 @@ interface PhotoApi {
     @GET("api/health")
     suspend fun health(): Health
 
+    @GET("api/media/{id}")
+    suspend fun meta(@retrofit2.http.Path("id") id: String): MediaItem
+
     @GET("api/media")
     suspend fun media(
         @Query("page") page: Int,

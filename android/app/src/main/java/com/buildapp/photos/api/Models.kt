@@ -18,6 +18,11 @@ data class MediaItem(
     val favorite: Int = 0,
     @SerialName("trashed_at") val trashedAt: Double? = null,
     val archived: Int = 0,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val place: String? = null,
+    @SerialName("camera_make") val cameraMake: String? = null,
+    @SerialName("camera_model") val cameraModel: String? = null,
 )
 
 @Serializable

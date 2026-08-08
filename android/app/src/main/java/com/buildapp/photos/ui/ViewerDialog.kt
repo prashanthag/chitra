@@ -183,6 +183,14 @@ fun ViewerDialog(
                 }
             }
             if (showInfo) {
+                // The list API omits GPS/camera columns — fetch the full record.
+                var detail by remember(item.id) { mutableStateOf(item) }
+                androidx.compose.runtime.LaunchedEffect(item.id) {
+                    try {
+                        detail = com.buildapp.photos.api.PhotoApi.create(serverUrl).meta(item.id)
+                            .copy(favorite = item.favorite)
+                    } catch (_: Exception) {}
+                }
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)
@@ -191,15 +199,20 @@ fun ViewerDialog(
                         .padding(16.dp),
                 ) {
                     val rows = buildList {
-                        add("Name" to item.name)
-                        item.takenAt?.takeIf { it > 0 }?.let {
+                        add("Name" to detail.name)
+                        detail.takenAt?.takeIf { it > 0 }?.let {
                             add("Taken" to java.text.SimpleDateFormat("MMM d, yyyy h:mm a", java.util.Locale.getDefault())
                                 .format(java.util.Date((it * 1000).toLong())))
                         } ?: add("Taken" to "Date unknown")
-                        if (item.width != null && item.height != null) add("Resolution" to "${item.width} × ${item.height}")
-                        item.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
-                        add("Type" to "${item.kind} · ${item.ext.removePrefix(".").uppercase()}")
-                        item.album?.let { add("Folder" to it) }
+                        val cam = listOfNotNull(detail.cameraMake, detail.cameraModel).joinToString(" ")
+                        if (cam.isNotBlank()) add("Camera" to cam)
+                        if (detail.width != null && detail.height != null) add("Resolution" to "${detail.width} × ${detail.height}")
+                        detail.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
+                        add("Type" to "${detail.kind} · ${detail.ext.removePrefix(".").uppercase()}")
+                        detail.album?.let { add("Folder" to it) }
+                        detail.place?.let { add("Place" to it) }
+                        if (detail.lat != null && detail.lng != null)
+                            add("Location" to "%.5f, %.5f".format(detail.lat, detail.lng))
                     }
                     rows.forEach { (k, v) ->
                         Row(Modifier.padding(vertical = 3.dp)) {
