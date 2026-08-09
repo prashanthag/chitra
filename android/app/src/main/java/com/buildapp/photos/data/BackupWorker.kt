@@ -97,6 +97,9 @@ class BackupWorker(
                         .setRequiresBatteryNotLow(true)
                         .build(),
                 )
+                // The one-time request below handles the initial backfill;
+                // delaying the periodic run avoids both racing at enable time.
+                .setInitialDelay(15, TimeUnit.MINUTES)
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,

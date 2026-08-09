@@ -24,7 +24,21 @@ object Uploader {
         var added = 0
         for (uri in uris) {
             val mime = resolver.getType(uri) ?: "application/octet-stream"
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "upload-${System.currentTimeMillis()}"
+            // Real filename + size from MediaStore (lastPathSegment is just a
+            // numeric row id). Skip sub-10KB files: launcher icons and other
+            // system images that live in MediaStore but aren't camera media.
+            var displayName: String? = null
+            var size = -1L
+            runCatching {
+                resolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                        android.provider.MediaStore.MediaColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) { displayName = c.getString(0); size = c.getLong(1) }
+                }
+            }
+            if (size in 0..10_000) continue
+            val name = displayName
+                ?: uri.lastPathSegment?.substringAfterLast('/')
+                ?: "upload-${System.currentTimeMillis()}"
             val body = object : RequestBody() {
                 override fun contentType() = mime.toMediaTypeOrNull()
                 override fun writeTo(sink: BufferedSink) {
