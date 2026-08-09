@@ -103,6 +103,17 @@ class BackupWorker(
                 ExistingPeriodicWorkPolicy.UPDATE,
                 req,
             )
+            // Kick off an immediate first pass too (backfills the whole
+            // camera roll on first enable instead of waiting for the period).
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "$WORK_NAME-now",
+                androidx.work.ExistingWorkPolicy.REPLACE,
+                androidx.work.OneTimeWorkRequestBuilder<BackupWorker>()
+                    .setConstraints(
+                        Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build(),
+                    )
+                    .build(),
+            )
         }
 
         fun cancel(context: Context) {

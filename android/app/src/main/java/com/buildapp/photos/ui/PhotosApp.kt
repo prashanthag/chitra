@@ -625,17 +625,63 @@ private fun ErrorView(error: String, serverUrl: String, onRetry: () -> Unit, onS
 @Composable
 private fun SettingsDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var text by remember { mutableStateOf(current) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val settings = remember { com.buildapp.photos.data.SettingsRepository(context) }
+    val backupOn by settings.backupEnabled.collectAsState(initial = false)
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.any { it }) {
+            scope.launch {
+                settings.setBackupEnabled(true)
+                com.buildapp.photos.data.BackupWorker.schedule(context)
+                android.widget.Toast.makeText(context, "Auto backup on — new photos upload on Wi-Fi", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Photos permission needed for backup", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Server URL") },
+        title = { Text("Settings") },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("http://host:port") },
-            )
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("http://host:port") },
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto backup", style = MaterialTheme.typography.bodyLarge)
+                        Text("Upload camera photos & videos over Wi-Fi",
+                            style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A9AA2))
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = backupOn,
+                        onCheckedChange = { want ->
+                            if (want) {
+                                val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
+                                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES,
+                                            android.Manifest.permission.READ_MEDIA_VIDEO)
+                                else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                permLauncher.launch(perms)
+                            } else {
+                                scope.launch {
+                                    settings.setBackupEnabled(false)
+                                    com.buildapp.photos.data.BackupWorker.cancel(context)
+                                }
+                            }
+                        },
+                    )
+                }
+            }
         },
         confirmButton = { TextButton(onClick = { onSave(text.trim()) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
