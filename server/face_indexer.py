@@ -42,7 +42,7 @@ except Exception:
 
 
 APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "cache" / "index.db"
+DB_PATH = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache")) / "index.db"
 
 # Detection scale: insightface expects RGB images; we downscale large ones
 # to ~1280px max edge to keep speed reasonable on CPU.

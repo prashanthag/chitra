@@ -9,6 +9,7 @@ Run:  .venv/bin/python clip_indexer.py
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import time
@@ -28,7 +29,7 @@ except Exception:
 
 
 APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "cache" / "index.db"
+DB_PATH = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache")) / "index.db"
 MODEL_NAME = "ViT-B-32"
 PRETRAINED = "openai"
 BATCH = 32
