@@ -705,6 +705,10 @@ def list_media():
     if album:
         where.append("m.album = ?")
         args.append(album)
+    elif not trashed_only:
+        # Phone-backup uploads stay out of the main feeds; they're browsable
+        # via their album (Albums -> uploads).
+        where.append("m.album != 'uploads'")
     if camera:
         # Match by model when set, else by make (the friendly label can be either).
         where.append("COALESCE(m.camera_model, m.camera_make) = ?")
