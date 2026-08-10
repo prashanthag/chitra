@@ -35,3 +35,4 @@ android/captures/
 
 # root-level runtime pid
 server.pid
+server/.venv-mac/
