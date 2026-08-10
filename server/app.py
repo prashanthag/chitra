@@ -420,7 +420,10 @@ def start_background_scan() -> None:
 def auto_purge_trash(age_days: int = 60) -> None:
     """Permanently delete media items trashed more than `age_days` ago.
     Removes the file on disk, the index row, the thumbnail, and any cluster
-    membership rows."""
+    membership rows. Disabled entirely in read-only/safe mode — the trash
+    must never empty itself there."""
+    if READ_ONLY:
+        return
     cutoff = time.time() - age_days * 86400
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -619,11 +622,17 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024  # 8 GiB upload cap
 
 @app.before_request
 def _readonly_guard():
-    if (READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS")
-            and request.path not in ("/api/rescan", "/api/upload")
-            # favorites and uploads are additive: they never modify or delete
-            # existing media, so a read-only library can still accept them
-            and not request.path.endswith("/favorite")):
+    """Safe mode: reversible and additive actions pass; nothing that would
+    modify or destroy an existing media file is allowed. Trash is fine —
+    it's a flag — but the trash can never be emptied."""
+    if not READ_ONLY or request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    allowed = (
+        request.path in ("/api/rescan", "/api/upload",
+                         "/api/media/batch_trash", "/api/media/batch_restore")
+        or request.path.endswith(("/favorite", "/trash", "/restore"))
+    )
+    if not allowed:
         return jsonify({"ok": False, "error": "read-only library"}), 403
 
 

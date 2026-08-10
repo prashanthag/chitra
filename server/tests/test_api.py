@@ -140,11 +140,35 @@ class ReadOnlyTests(unittest.TestCase):
     def tearDown(self):
         chitra.READ_ONLY = False
 
-    def test_destructive_blocked(self):
+    def test_trash_and_restore_allowed_but_permanent_delete_blocked(self):
+        # Safe mode: users can trash (reversible) but never destroy files.
         mid = id_of("one.jpg")
-        self.assertEqual(client.post(f"/api/media/{mid}/trash").status_code, 403)
+        self.assertEqual(client.post(f"/api/media/{mid}/trash").status_code, 200)
         self.assertEqual(
             client.post("/api/media/batch_delete", json={"ids": [mid]}).status_code, 403)
+        r = client.post("/api/media/batch_restore", json={"ids": [mid]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["count"], 1)
+
+    def test_file_modifying_endpoints_blocked(self):
+        mid = id_of("one.jpg")
+        self.assertEqual(client.post(f"/api/media/{mid}/rotate").status_code, 403)
+        self.assertEqual(client.post(f"/api/media/{mid}/edit").status_code, 403)
+
+    def test_auto_purge_never_destroys_in_safe_mode(self):
+        # Even ancient trashed items must survive: purge is a no-op.
+        p = os.path.join(MEDIA, "CameraX", "old_trashed.jpg")
+        make_jpeg(p)
+        chitra.scan_once()
+        mid = id_of("old_trashed.jpg")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET trashed_at=? WHERE id=?",
+                     (time.time() - 90 * 86400, mid))
+        conn.commit()
+        conn.close()
+        chitra.auto_purge_trash(age_days=60)
+        self.assertTrue(os.path.exists(p), "purge deleted a file in safe mode")
+        client.post("/api/media/batch_restore", json={"ids": [mid]})
 
     def test_favorite_allowed(self):
         mid = id_of("one.jpg")
