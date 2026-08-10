@@ -84,9 +84,15 @@ class FeedFilterTests(unittest.TestCase):
         total, names = totals(camera="TestFold")
         self.assertEqual(names, ["up.jpg"])
 
-    def test_search_sees_uploads(self):
+    def test_search_excludes_uploads_and_undated(self):
+        # Search is scoped to the curated library: no uploads album, no
+        # unknown-date items (user decision 2026-08-09).
         _, names = totals(q="up")
-        self.assertIn("up.jpg", names)
+        self.assertNotIn("up.jpg", names)
+        _, names = totals(q="two")     # two.jpg is the undated fixture
+        self.assertNotIn("two.jpg", names)
+        _, names = totals(q="one")     # dated curated item still findable
+        self.assertIn("one.jpg", names)
 
     def test_album_uploads_browsable(self):
         _, names = totals(album="uploads")

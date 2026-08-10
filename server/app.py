@@ -714,9 +714,9 @@ def list_media():
     if album:
         where.append("m.album = ?")
         args.append(album)
-    elif not (trashed_only or camera or q or favorites_only or year):
-        # Phone-backup uploads stay out of the plain browse feeds; any
-        # explicit filter (camera, search, favorites, album, year) sees them.
+    elif not (trashed_only or camera or favorites_only or year):
+        # Phone-backup uploads stay out of the plain browse feeds; explicit
+        # camera/favorites/album/year filters see them (search does not).
         where.append("m.album != 'uploads'")
     if camera:
         # Match by model when set, else by make (the friendly label can be either).
@@ -727,6 +727,10 @@ def list_media():
     if q:
         where.append("LOWER(m.name) LIKE ?")
         args.append(f"%{q.lower()}%")
+        # Search is scoped to the curated library: skip phone-backup uploads
+        # and unknown-date items.
+        where.append("m.album != 'uploads'")
+        where.append("m.taken_at IS NOT NULL")
     if year:
         try:
             y = int(year)
@@ -899,7 +903,8 @@ def search_semantic():
         f"CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite, "
         f"m.trashed_at, m.archived "
         f"FROM media m LEFT JOIN favorites f ON f.media_id = m.id "
-        f"WHERE m.id IN ({placeholders})",
+        f"WHERE m.id IN ({placeholders}) "
+        f"AND m.album != 'uploads' AND m.taken_at IS NOT NULL",
         top_ids,
     ).fetchall()
     by_id = {r["id"]: dict(r) for r in rows}
