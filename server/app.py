@@ -853,7 +853,9 @@ def _load_clip_index():
         cur = db().execute(
             "SELECT id, clip_embedding FROM media "
             "WHERE clip_embedding IS NOT NULL AND length(clip_embedding) > 0 "
-            "AND trashed_at IS NULL"
+            "AND trashed_at IS NULL "
+            # search scope: curated library only (no uploads, no unknown-date)
+            "AND album != 'uploads' AND taken_at IS NOT NULL"
         )
     except sqlite3.OperationalError:
         # clip_embedding column only exists once clip_indexer.py has run.
