@@ -1350,7 +1350,8 @@ def list_cameras():
                      AND m2.trashed_at IS NULL
                    ORDER BY COALESCE(m2.taken_at, m2.mtime) DESC LIMIT 1) AS cover
            FROM media
-           WHERE camera_model IS NOT NULL OR camera_make IS NOT NULL
+           WHERE (camera_model IS NOT NULL OR camera_make IS NOT NULL)
+             AND trashed_at IS NULL
            GROUP BY COALESCE(camera_model, camera_make)
            ORDER BY count DESC"""
     ).fetchall()

@@ -191,6 +191,22 @@ class ReadOnlyTests(unittest.TestCase):
         self.assertNotIn("roundtrip.jpg", plain)
 
 
+class CamerasTests(unittest.TestCase):
+    def test_trashed_items_leave_camera_counts_and_empty_cameras_vanish(self):
+        # up.jpg is TestFold's only item: trashing it must remove the camera
+        # from /api/cameras entirely; restoring brings it back with count 1.
+        mid = id_of("up.jpg")
+
+        def cams():
+            return {c["key"]: c["count"] for c in client.get("/api/cameras").get_json()}
+
+        self.assertEqual(cams().get("TestFold"), 1)
+        client.post("/api/media/batch_trash", json={"ids": [mid]})
+        self.assertNotIn("TestFold", cams(), "empty camera should disappear")
+        client.post("/api/media/batch_restore", json={"ids": [mid]})
+        self.assertEqual(cams().get("TestFold"), 1)
+
+
 class MemoriesTests(unittest.TestCase):
     def test_memories_survives_missing_clip_column(self):
         # Regression: fresh DBs (no clip_indexer) 500'd -> app "failed to connect".
