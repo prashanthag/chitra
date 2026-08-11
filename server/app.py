@@ -1389,6 +1389,72 @@ def _camera_label(make: str | None, model: str | None) -> str:
     return model or make or "Unknown device"
 
 
+# ---------- Passport / ID photo ----------
+
+
+def passport_crop_box(face_bbox, img_w: int, img_h: int,
+                      head_frac: float = 0.58) -> tuple[int, int, int, int]:
+    """Square crop around a face so the head is ~head_frac of the crop height
+    (US passport spec wants 50-69%). Face centered horizontally; headroom of
+    ~55% of head height above the box (hair). Clamped to image bounds."""
+    x1, y1, x2, y2 = face_bbox
+    head_h = y2 - y1
+    side = head_h / head_frac
+    cx = (x1 + x2) / 2
+    top = y1 - 0.55 * head_h * (1 - head_frac) / 0.42  # headroom above bbox
+    left = cx - side / 2
+    # clamp, keeping the square inside the image
+    side = min(side, img_w, img_h)
+    left = max(0, min(left, img_w - side))
+    top = max(0, min(top, img_h - side))
+    return (int(left), int(top), int(left + side), int(top + side))
+
+
+def _person_matte(im):
+    """Alpha matte of the person via rembg (AI segmentation). Removes the
+    background INCLUDING cast shadows, which color-threshold whitening can't.
+    Returns a PIL 'L' image, or raises if rembg isn't installed."""
+    from rembg import remove
+    rgba = remove(im.convert("RGB"))
+    return rgba.split()[-1]
+
+
+@app.get("/api/media/<mid>/passport")
+def media_passport(mid: str):
+    """2x2-style ID photo: person segmented onto pure white, square crop with
+    the head at ~58% height. ?size=600 controls output pixels."""
+    r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r or r["kind"] != "photo":
+        abort(404)
+    src = Path(r["path"])
+    if not src.exists():
+        abort(404)
+    try:
+        face = db().execute(
+            "SELECT bbox FROM faces WHERE media_id = ? "
+            "ORDER BY (score) DESC LIMIT 1", (mid,)).fetchone()
+    except sqlite3.OperationalError:
+        face = None
+    if not face:
+        abort(404, "no face detected in this photo")
+    size = min(1200, max(200, int(request.args.get("size", 600))))
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        try:
+            matte = _person_matte(im)
+        except Exception:
+            abort(503, "background removal unavailable (pip install rembg)")
+        white = Image.new("RGB", im.size, (255, 255, 255))
+        white.paste(im, mask=matte)
+        bbox = tuple(int(float(v)) for v in face["bbox"].split(","))
+        crop = white.crop(passport_crop_box(bbox, im.width, im.height))
+        crop = crop.resize((size, size), Image.LANCZOS)
+        buf = io.BytesIO()
+        crop.save(buf, "JPEG", quality=95)
+        buf.seek(0)
+        return send_file(buf, mimetype="image/jpeg")
+
+
 _place_cache: dict = {}
 
 

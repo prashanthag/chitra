@@ -213,6 +213,61 @@ class CamerasTests(unittest.TestCase):
         self.assertEqual(cams().get("TestFold"), 1)
 
 
+class PassportTests(unittest.TestCase):
+    def test_crop_box_puts_head_in_passport_range(self):
+        # 4000x3000 photo, face box 300px tall centered-ish
+        box = chitra.passport_crop_box((1800, 1000, 2100, 1300), 4000, 3000)
+        x1, y1, x2, y2 = box
+        self.assertEqual(x2 - x1, y2 - y1, "crop must be square")
+        head_pct = 300 / (y2 - y1) * 100
+        self.assertGreaterEqual(head_pct, 50)
+        self.assertLessEqual(head_pct, 69)
+        # face horizontally centered in crop
+        self.assertAlmostEqual((x1 + x2) / 2, (1800 + 2100) / 2, delta=2)
+
+    def test_crop_box_clamps_inside_image(self):
+        # face near top-left corner: crop must stay within bounds
+        x1, y1, x2, y2 = chitra.passport_crop_box((10, 10, 110, 110), 800, 600)
+        self.assertGreaterEqual(x1, 0)
+        self.assertGreaterEqual(y1, 0)
+        self.assertLessEqual(x2, 800)
+        self.assertLessEqual(y2, 600)
+
+    def test_passport_endpoint_returns_square_jpeg_with_white_corners(self):
+        # Stub the segmenter: fully-opaque person = whole image kept; the
+        # endpoint must still composite, crop square, and return JPEG.
+        mid = id_of("one.jpg")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY,"
+                     " media_id TEXT, bbox TEXT, score REAL, embedding BLOB,"
+                     " cluster_id INTEGER)")
+        conn.execute("INSERT INTO faces (media_id, bbox, score) VALUES (?,?,?)",
+                     (mid, "20,16,44,48", 0.9))
+        conn.commit()
+        conn.close()
+
+        def fake_matte(im):
+            from PIL import Image as I
+            return I.new("L", im.size, 255)  # keep everything
+
+        old = chitra._person_matte
+        chitra._person_matte = fake_matte
+        try:
+            r = client.get(f"/api/media/{mid}/passport")
+        finally:
+            chitra._person_matte = old
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "image/jpeg")
+        from PIL import Image as I
+        im = I.open(io.BytesIO(r.data))
+        self.assertEqual(im.size[0], im.size[1], "output must be square")
+
+    def test_passport_404_without_face(self):
+        mid = id_of("two.jpg")
+        r = client.get(f"/api/media/{mid}/passport")
+        self.assertEqual(r.status_code, 404)
+
+
 class MemoriesTests(unittest.TestCase):
     def test_memories_survives_missing_clip_column(self):
         # Regression: fresh DBs (no clip_indexer) 500'd -> app "failed to connect".
