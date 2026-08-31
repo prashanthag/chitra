@@ -1481,6 +1481,9 @@ def media_meta(mid: str):
     if not r:
         abort(404)
     d = dict(r)
+    # clip_indexer.py owns media.clip_embedding; the BLOB is not JSON
+    # serializable and has no business in the client payload.
+    d.pop("clip_embedding", None)
     if d.get("lat") is not None and d.get("lng") is not None:
         d["place"] = _place_for(d["lat"], d["lng"])
     return jsonify(d)

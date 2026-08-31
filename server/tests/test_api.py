@@ -73,6 +73,13 @@ def id_of(name):
     return row[0]
 
 
+def _drop_clip_embedding():
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    conn.execute("ALTER TABLE media DROP COLUMN clip_embedding")
+    conn.commit()
+    conn.close()
+
+
 class FeedFilterTests(unittest.TestCase):
     def test_plain_feed_excludes_uploads(self):
         total, names = totals()
@@ -286,6 +293,28 @@ class DetailTests(unittest.TestCase):
         r = client.get(f"/api/media/{id_of('one.jpg')}/full?as=jpeg")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.mimetype, "image/jpeg")
+
+    def test_detail_survives_clip_embedding_blob(self):
+        """Regression: media_meta does SELECT *, so once clip_indexer.py adds
+        the clip_embedding BLOB every detail request 500'd on jsonify with
+        'Object of type bytes is not JSON serializable' — the metadata panel
+        (date, camera, size) went blank for every CLIP-indexed photo."""
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        chitra._add_column_if_missing(conn, "media", "clip_embedding BLOB")
+        conn.execute("UPDATE media SET clip_embedding=? WHERE name='one.jpg'",
+                     (b"\x00\x01\x02\x03" * 128,))
+        conn.commit()
+        conn.close()
+        # The fixture DB is shared module-wide, and MemoriesTests asserts the
+        # no-clip_embedding path — put the schema back however this test ends.
+        self.addCleanup(_drop_clip_embedding)
+
+        r = client.get(f"/api/media/{id_of('one.jpg')}")
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        self.assertNotIn("clip_embedding", d)
+        self.assertEqual(d["name"], "one.jpg")
+        self.assertIsNotNone(d["taken_at"])
 
 
 if __name__ == "__main__":
