@@ -89,6 +89,8 @@
   .card .sq { width:100%; aspect-ratio:1; border-radius:10px; object-fit:cover; background:var(--panel2); }
   .card .nm { margin-top:8px; font-size:13px; text-align:center; }
   .card .ct { font-size:11px; color:var(--dim); text-align:center; }
+  .card .ct .rn { color:var(--dim); text-decoration:underline; text-underline-offset:2px; }
+  .card .ct .rn:hover { color:var(--fg, #e8e8ea); }
 
   #status { padding:18px; color:var(--dim); font-size:13px; }
   #sentinel { height:1px; }
@@ -423,25 +425,39 @@ async function loadPeople(){
       <div class="nm">${esc(p.name)}</div><div class="ct">${p.count} photos</div></div>`);
   });
   clusters.forEach(c=>{
-    const label = c.name? esc(c.name) : 'Unnamed';
-    cards.push(`<div class="card" data-cid="${c.id}">
+    const named = !!(c.name && c.name.trim());
+    const label = named? esc(c.name) : 'Unnamed';
+    cards.push(`<div class="card" data-cid="${c.id}" data-cname="${named? esc(c.name) : ''}">
       <img class="av" loading="lazy" src="/api/clusters/${c.id}/thumb"/>
-      <div class="nm">${label}</div><div class="ct">${c.count} faces · click to name</div></div>`);
+      <div class="nm">${label}</div><div class="ct">${c.count} faces · <a href="#" class="rn" data-rn="${c.id}">${named? 'rename' : 'name this person'}</a></div></div>`);
   });
   $('#cards').innerHTML = cards.join('');
-  $('#cards').querySelectorAll('[data-cid]').forEach(el=> el.addEventListener('click', ()=> openCluster(parseInt(el.dataset.cid,10))));
+  $('#cards').querySelectorAll('[data-cid]').forEach(el=> el.addEventListener('click', ()=> openCluster(parseInt(el.dataset.cid,10), el.dataset.cname)));
+  $('#cards').querySelectorAll('[data-rn]').forEach(el=> el.addEventListener('click', ev=>{
+    ev.preventDefault(); ev.stopPropagation();   // don't also open the cluster
+    renameCluster(parseInt(el.dataset.rn,10), el.closest('[data-cid]').dataset.cname);
+  }));
   $('#cards').querySelectorAll('[data-pid]').forEach(el=> el.addEventListener('click', ()=> openPerson(parseInt(el.dataset.pid,10), el.dataset.pname)));
   $('#status').textContent = cards.length? '' :
     'No people yet. Run the face indexer:  PHOTO_ROOT=… .venv/bin/python face_indexer.py';
 }
-async function openCluster(cid){
-  const name = prompt('Name this person (leave blank to just view their photos):');
-  if(name && name.trim()){
-    await api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:name.trim()})});
+async function openCluster(cid, name){
+  // An already-named group opens straight to its photos; only an unnamed one
+  // asks for a name, and even then blank just views it.
+  if(!name){ return renameCluster(cid, ''); }
+  const items = await getJSON(`/api/clusters/${cid}/media`);
+  showCollection(name, items);
+}
+async function renameCluster(cid, current){
+  const name = prompt('Name this person (leave blank to just view their photos):', current || '');
+  if(name === null){ return; }               // cancelled - do nothing at all
+  const clean = name.trim();
+  if(clean && clean !== current){
+    await api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
     toast('Saved name');
   }
   const items = await getJSON(`/api/clusters/${cid}/media`);
-  showCollection(name && name.trim()? name.trim() : 'Person', items);
+  showCollection(clean || current || 'Person', items);
 }
 async function openPerson(pid, name){
   const items = await getJSON(`/api/persons/${pid}/media`);
