@@ -1,3 +1,6 @@
+# Local env (machine-specific paths)
+.env
+
 # Python
 __pycache__/
 *.pyc
@@ -13,6 +16,7 @@ server/server.log
 server/server.pid
 server/face_indexer.log
 server/face_indexer.pid
+server/prewarm.log
 # Stray venv artifacts that ended up in server/ (real venv is server/.venv/)
 server/bin/
 server/lib/
@@ -36,3 +40,6 @@ android/captures/
 # root-level runtime pid
 server.pid
 server/.venv-mac/
+
+# Android build artifact served for sideloading (not versioned)
+server/static/chitra-app.apk
