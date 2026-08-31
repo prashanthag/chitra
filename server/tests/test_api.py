@@ -73,6 +73,13 @@ def id_of(name):
     return row[0]
 
 
+def _drop_clusters_table():
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    conn.execute("DROP TABLE IF EXISTS clusters")
+    conn.commit()
+    conn.close()
+
+
 def _drop_clip_embedding():
     conn = chitra.sqlite3.connect(chitra.DB_PATH)
     conn.execute("ALTER TABLE media DROP COLUMN clip_embedding")
@@ -167,6 +174,33 @@ class ReadOnlyTests(unittest.TestCase):
         mid = id_of("one.jpg")
         self.assertEqual(client.post(f"/api/media/{mid}/rotate").status_code, 403)
         self.assertEqual(client.post(f"/api/media/{mid}/edit").status_code, 403)
+
+    def test_people_labelling_allowed_in_safe_mode(self):
+        """Regression: safe mode 403'd cluster naming and person tagging, so
+        renaming a face group silently did nothing on a read-only library.
+        Labels are metadata about the library, not edits to any media file."""
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.execute("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (9, NULL, 1)")
+        conn.commit()
+        conn.close()
+        self.addCleanup(_drop_clusters_table)
+
+        r = client.post("/api/clusters/9/name", json={"name": "Sister A"})
+        self.assertEqual(r.status_code, 200)
+
+        r = client.post("/api/persons", json={"name": "Sister B"})
+        self.assertEqual(r.status_code, 200)
+        pid = r.get_json()["id"]
+        self.assertEqual(
+            client.post(f"/api/persons/{pid}/tag/{id_of('one.jpg')}").status_code, 200)
+
+        # The name must actually persist, not just return 200.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        got = conn.execute("SELECT name FROM clusters WHERE id=9").fetchone()[0]
+        conn.close()
+        self.assertEqual(got, "Sister A")
 
     def test_auto_purge_never_destroys_in_safe_mode(self):
         # Even ancient trashed items must survive: purge is a no-op.

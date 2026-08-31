@@ -630,7 +630,10 @@ def _readonly_guard():
     allowed = (
         request.path in ("/api/rescan", "/api/upload",
                          "/api/media/batch_trash", "/api/media/batch_restore")
-        or request.path.endswith(("/favorite", "/trash", "/restore"))
+        or request.path.endswith(("/favorite", "/trash", "/restore", "/name"))
+        # Face/person labels describe the library rather than the files in it:
+        # naming a cluster or tagging a person writes no bytes to any media.
+        or request.path.startswith("/api/persons")
     )
     if not allowed:
         return jsonify({"ok": False, "error": "read-only library"}), 403

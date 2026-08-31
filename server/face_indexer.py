@@ -189,8 +189,24 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
     n_noise = int((labels == -1).sum())
     print(f"[cluster] {n_clusters} clusters, {n_noise} unclustered")
 
+    # Names are the one thing here a human typed; reclustering must not eat
+    # them. Remember which faces carried each name, then re-attach the name to
+    # whichever new cluster inherits most of those faces. A name lands on at
+    # most one cluster, so a split person leaves the other half unnamed and
+    # free to be named separately rather than silently duplicating a label.
+    named_faces: dict[str, set[int]] = {}
+    for cid, cname in cur.execute(
+        "SELECT id, name FROM clusters WHERE name IS NOT NULL AND name != ''"
+    ).fetchall():
+        members = {r[0] for r in cur.execute(
+            "SELECT id FROM faces WHERE cluster_id = ?", (cid,)).fetchall()}
+        if members:
+            named_faces[cname] = members
+
     cur.execute("DELETE FROM clusters")
     cur.execute("UPDATE faces SET cluster_id = NULL")
+    # name -> (overlap, new_cluster_id) best seen so far
+    best_for_name: dict[str, tuple[int, int]] = {}
 
     for lbl in sorted(set(labels)):
         if lbl == -1:
@@ -210,6 +226,17 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
             "UPDATE faces SET cluster_id = ? WHERE id = ?",
             [(cluster_id, int(fid)) for fid in member_face_ids.tolist()],
         )
+        if named_faces:
+            members = set(member_face_ids.tolist())
+            for cname, old_members in named_faces.items():
+                overlap = len(members & old_members)
+                if overlap and overlap > best_for_name.get(cname, (0, 0))[0]:
+                    best_for_name[cname] = (overlap, cluster_id)
+
+    for cname, (overlap, cluster_id) in best_for_name.items():
+        cur.execute("UPDATE clusters SET name = ? WHERE id = ?", (cname, cluster_id))
+    if named_faces:
+        print(f"[cluster] carried over {len(best_for_name)}/{len(named_faces)} names")
     conn.commit()
 
 
