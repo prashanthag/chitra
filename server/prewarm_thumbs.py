@@ -1,10 +1,17 @@
 """Pre-generate all missing thumbnails in parallel so browsing is instant."""
-import sqlite3, time, sys
+import os, sqlite3, time, sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import app  # reuse the server's thumb logic (no Flask server started)
 
-conn = sqlite3.connect("cache/index.db")
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache")) / "index.db"
+
+# sqlite3.connect() would silently create an empty DB and report 0 items.
+if not DB_PATH.exists():
+    sys.exit(f"index db not found: {DB_PATH}")
+
+conn = sqlite3.connect(DB_PATH)
 conn.row_factory = sqlite3.Row
 rows = conn.execute(
     "SELECT id, path, kind FROM media WHERE trashed_at IS NULL"
