@@ -18,6 +18,8 @@ import os
 import sqlite3
 import sys
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:
@@ -108,6 +110,46 @@ def load_image(path: Path) -> np.ndarray | None:
         return None
 
 
+def _prefetch(todo: list, workers: int, lookahead: int):
+    """Yield (media_id, path, image) with decoding overlapped across threads.
+
+    Detection is GPU work but decoding a JPEG is not, and doing them in lockstep
+    left the GPU idle most of the time — the card sat at ~29% while one thread
+    walked the library. PIL and OpenCV drop the GIL inside their C loops, so a
+    small pool of decoders keeps the next frames ready while the current one is
+    being detected. Only decoding is parallel: insightface sessions are not
+    thread-safe, so inference stays on the calling thread.
+
+    lookahead bounds how many decoded frames are held at once, which caps
+    memory at roughly lookahead x 5MB rather than the whole library.
+    """
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        it = iter(todo)
+        pending: deque = deque()
+
+        def submit_next() -> bool:
+            for mid, mpath in it:
+                path = Path(mpath)
+                if not path.exists():
+                    continue          # leave unprocessed, same as before
+                pending.append((mid, path, pool.submit(load_image, path)))
+                return True
+            return False
+
+        for _ in range(lookahead):
+            if not submit_next():
+                break
+        while pending:
+            mid, path, fut = pending.popleft()
+            submit_next()
+            try:
+                img = fut.result()
+            except Exception as e:
+                print(f"  load failed {path.name}: {e}", file=sys.stderr)
+                img = None
+            yield mid, path, img
+
+
 def detect(app: FaceAnalysis, conn: sqlite3.Connection, batch_limit: int | None = None) -> None:
     cur = conn.cursor()
     cur.execute(
@@ -121,14 +163,11 @@ def detect(app: FaceAnalysis, conn: sqlite3.Connection, batch_limit: int | None 
     total = len(todo)
     print(f"[faces] {total} unprocessed photos")
 
+    workers = int(os.environ.get("FACE_WORKERS", "8"))
     start = time.time()
     processed = 0
     inserted_faces = 0
-    for mid, mpath in todo:
-        path = Path(mpath)
-        if not path.exists():
-            continue
-        img = load_image(path)
+    for mid, path, img in _prefetch(todo, workers, workers * 2):
         n_faces = 0
         if img is not None:
             try:
