@@ -402,7 +402,16 @@ def main() -> None:
 
     prev = conn.execute(
         "SELECT value FROM face_meta WHERE key = 'model'").fetchone()
-    prev = prev[0] if prev else None
+    # No recorded model but embeddings already exist means they predate this
+    # bookkeeping, i.e. they came from the old buffalo_l default. Treating that
+    # as "nothing to compare" would leave old vectors in the table and quietly
+    # mix two embedding spaces, so name it explicitly.
+    if prev is None and conn.execute(
+            "SELECT 1 FROM faces LIMIT 1").fetchone() is not None:
+        prev = "buffalo_l"
+        print("[init] found embeddings with no recorded model; assuming buffalo_l")
+    else:
+        prev = prev[0] if prev else None
     if prev and prev != model:
         # Old embeddings live in a different vector space; mixing them would
         # scramble every cluster, so start the face table over.
