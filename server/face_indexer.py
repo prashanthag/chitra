@@ -30,8 +30,10 @@ except ImportError:
 import cv2
 import numpy as np
 from insightface.app import FaceAnalysis
+
+import gpu
 from PIL import Image, ImageOps
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN, AgglomerativeClustering
 
 try:
     import pillow_heif
@@ -68,7 +70,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             count INTEGER DEFAULT 0,
-            rep_face_id INTEGER NULL
+            rep_face_id INTEGER NULL,
+            centroid BLOB               -- mean embedding, for incremental assign
+        );
+
+        -- Embeddings from different recognition models are not comparable,
+        -- so remember which model produced the ones on disk.
+        CREATE TABLE IF NOT EXISTS face_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS face_state (
@@ -78,6 +88,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(clusters)")}
+    if "centroid" not in cols:
+        conn.execute("ALTER TABLE clusters ADD COLUMN centroid BLOB")
     conn.commit()
 
 
@@ -151,22 +164,43 @@ def detect(app: FaceAnalysis, conn: sqlite3.Connection, batch_limit: int | None 
     print(f"[faces] done. processed={processed} inserted_faces={inserted_faces}")
 
 
+def _centroids(embs: np.ndarray, labels: np.ndarray, keys: list) -> np.ndarray:
+    """L2-normalized mean embedding per label, in the order given by keys."""
+    out = np.stack([embs[labels == k].mean(axis=0) for k in keys])
+    return out / np.linalg.norm(out, axis=1, keepdims=True)
+
+
 def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
-            min_score: float = 0.65, min_face_edge: int = 60) -> None:
-    """Cluster face embeddings using DBSCAN over cosine distance.
-    Embeddings are already L2-normalized (normed_embedding from insightface),
-    so cosine distance = 1 - dot product.
+            min_score: float = 0.65, min_face_edge: int = 60,
+            core_eps: float | None = None) -> None:
+    """Group faces into people, in two stages so distinct people stay distinct.
 
-    Filters out: low det_score (likely false positives) and tiny faces
-    (bbox edge < min_face_edge px on the downscaled-for-detection frame).
+    DBSCAN alone links faces transitively: A joins B, B joins C, and two
+    different people end up in one group because a chain of in-between faces
+    connects them — which is how a 4700-face blob holding two siblings forms.
 
-    Rep face per cluster = the face with highest det_score."""
+    Stage 1 runs DBSCAN at a deliberately tight radius (core_eps), which
+    yields many small but *pure* cores rather than one merged blob.
+    Stage 2 merges those cores with average-linkage agglomerative clustering,
+    which compares whole groups instead of individual faces and so cannot
+    chain. Faces DBSCAN called noise are then attached to the nearest final
+    group if they are close enough to earn it.
+
+    Tunables (env): FACE_CORE_EPS stage-1 radius, FACE_EPS stage-2 distance
+    below which two cores are the same person, FACE_ASSIGN_MAX how close a
+    leftover face must be to join a group.
+
+    Rep face per cluster = the face with highest det_score.
+    """
+    if core_eps is None:
+        core_eps = float(os.environ.get("FACE_CORE_EPS", "0.25"))
+    assign_max = float(os.environ.get("FACE_ASSIGN_MAX", "0.40"))
+
     cur = conn.cursor()
     rows = cur.execute(
         "SELECT id, embedding, score, bbox FROM faces WHERE embedding IS NOT NULL AND score >= ?",
         (min_score,),
     ).fetchall()
-    # Filter by face size
     filtered = []
     for r in rows:
         try:
@@ -179,15 +213,55 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
     if not rows:
         print("[cluster] no faces above score threshold")
         return
+
     ids = np.array([r[0] for r in rows], dtype=np.int64)
     scores = np.array([r[2] for r in rows], dtype=np.float32)
     embs = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in rows])
-    print(f"[cluster] running DBSCAN on {len(ids)} embeddings (score>={min_score}, edge>={min_face_edge}, eps={eps})...")
-    db = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine", n_jobs=-1).fit(embs)
-    labels = db.labels_
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_noise = int((labels == -1).sum())
-    print(f"[cluster] {n_clusters} clusters, {n_noise} unclustered")
+    embs = embs / np.linalg.norm(embs, axis=1, keepdims=True)
+
+    print(f"[cluster] stage 1: DBSCAN on {len(ids)} embeddings "
+          f"(score>={min_score}, edge>={min_face_edge}, core_eps={core_eps})...")
+    core = DBSCAN(eps=core_eps, min_samples=min_samples,
+                  metric="cosine", n_jobs=-1).fit(embs).labels_
+    core_keys = sorted(k for k in set(core.tolist()) if k != -1)
+    if not core_keys:
+        print("[cluster] no dense cores found; try a larger FACE_CORE_EPS")
+        return
+    print(f"[cluster] stage 1: {len(core_keys)} cores, "
+          f"{int((core == -1).sum())} loose faces")
+
+    cents = _centroids(embs, core, core_keys)
+    if len(core_keys) == 1:
+        merged = np.zeros(1, dtype=np.int64)
+    else:
+        print(f"[cluster] stage 2: average-linkage merge of {len(cents)} cores "
+              f"(eps={eps})...")
+        merged = AgglomerativeClustering(
+            n_clusters=None, distance_threshold=eps,
+            metric="cosine", linkage="average").fit(cents).labels_
+    # core label -> final group
+    core_to_final = {k: int(merged[i]) for i, k in enumerate(core_keys)}
+    final = np.full(len(ids), -1, dtype=np.int64)
+    for i, c in enumerate(core.tolist()):
+        if c != -1:
+            final[i] = core_to_final[c]
+    n_groups = len(set(merged.tolist()))
+    print(f"[cluster] stage 2: {len(core_keys)} cores -> {n_groups} people")
+
+    # Stage 3: attach leftover faces to the nearest group they clearly belong to.
+    group_keys = sorted(set(final[final != -1].tolist()))
+    gcents = _centroids(embs, final, group_keys)
+    loose = np.flatnonzero(final == -1)
+    if len(loose):
+        sims = embs[loose] @ gcents.T
+        best = sims.argmax(axis=1)
+        bestd = 1.0 - sims[np.arange(len(loose)), best]
+        take = bestd <= assign_max
+        for i, gi, ok in zip(loose, best, take):
+            if ok:
+                final[i] = group_keys[gi]
+        print(f"[cluster] stage 3: attached {int(take.sum())}/{len(loose)} "
+              f"loose faces (<= {assign_max})")
 
     # Names are the one thing here a human typed; reclustering must not eat
     # them. Remember which faces carried each name, then re-attach the name to
@@ -205,21 +279,19 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
 
     cur.execute("DELETE FROM clusters")
     cur.execute("UPDATE faces SET cluster_id = NULL")
-    # name -> (overlap, new_cluster_id) best seen so far
     best_for_name: dict[str, tuple[int, int]] = {}
 
-    for lbl in sorted(set(labels)):
-        if lbl == -1:
-            continue
-        mask = labels == lbl
+    for g in sorted(set(final[final != -1].tolist())):
+        mask = final == g
         member_face_ids = ids[mask]
         member_scores = scores[mask]
-        # Pick highest-score face as representative
         rep_idx = int(np.argmax(member_scores))
         rep_face_id = int(member_face_ids[rep_idx])
+        cent = embs[mask].mean(axis=0)
+        cent = cent / np.linalg.norm(cent)
         cur.execute(
-            "INSERT INTO clusters (count, rep_face_id) VALUES (?, ?)",
-            (len(member_face_ids), rep_face_id),
+            "INSERT INTO clusters (count, rep_face_id, centroid) VALUES (?, ?, ?)",
+            (len(member_face_ids), rep_face_id, cent.astype(np.float32).tobytes()),
         )
         cluster_id = cur.lastrowid
         cur.executemany(
@@ -233,30 +305,85 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
                 if overlap and overlap > best_for_name.get(cname, (0, 0))[0]:
                     best_for_name[cname] = (overlap, cluster_id)
 
-    for cname, (overlap, cluster_id) in best_for_name.items():
+    for cname, (_overlap, cluster_id) in best_for_name.items():
         cur.execute("UPDATE clusters SET name = ? WHERE id = ?", (cname, cluster_id))
     if named_faces:
         print(f"[cluster] carried over {len(best_for_name)}/{len(named_faces)} names")
     conn.commit()
 
 
-def _onnx_providers() -> tuple[list[str], int]:
-    """Pick the best onnxruntime execution providers for face detection.
+def assign_new(conn: sqlite3.Connection, min_score: float = 0.65,
+               min_face_edge: int = 60) -> int:
+    """Attach newly detected faces to existing people without reclustering.
 
-    Prefers NVIDIA CUDA, then Apple CoreML, then CPU. Returns (providers, ctx_id)
-    where ctx_id>=0 selects a GPU and -1 means CPU (per insightface convention).
+    Keeps the People tab current as photos are added: each unassigned face
+    joins the nearest cluster centroid within FACE_ASSIGN_MAX. Faces too far
+    from every known person are left unassigned for the next full cluster()
+    run to turn into new people, so a stranger never lands in someone's group.
     """
-    try:
-        import onnxruntime as ort
+    assign_max = float(os.environ.get("FACE_ASSIGN_MAX", "0.40"))
+    cur = conn.cursor()
+    cents = cur.execute(
+        "SELECT id, centroid FROM clusters WHERE centroid IS NOT NULL").fetchall()
+    if not cents:
+        return 0
+    rows = cur.execute(
+        "SELECT id, embedding, bbox FROM faces "
+        "WHERE cluster_id IS NULL AND embedding IS NOT NULL AND score >= ?",
+        (min_score,),
+    ).fetchall()
+    keep = []
+    for r in rows:
+        try:
+            x1, y1, x2, y2 = (int(v) for v in r[2].split(","))
+            if min(x2 - x1, y2 - y1) >= min_face_edge:
+                keep.append(r)
+        except Exception:
+            pass
+    if not keep:
+        return 0
+    cids = [c[0] for c in cents]
+    C = np.stack([np.frombuffer(c[1], dtype=np.float32) for c in cents])
+    C = C / np.linalg.norm(C, axis=1, keepdims=True)
+    E = np.stack([np.frombuffer(r[1], dtype=np.float32) for r in keep])
+    E = E / np.linalg.norm(E, axis=1, keepdims=True)
+    sims = E @ C.T
+    best = sims.argmax(axis=1)
+    bestd = 1.0 - sims[np.arange(len(keep)), best]
+    updates = [(cids[int(b)], keep[i][0])
+               for i, (b, d) in enumerate(zip(best, bestd)) if d <= assign_max]
+    if updates:
+        cur.executemany("UPDATE faces SET cluster_id = ? WHERE id = ?", updates)
+        cur.execute(
+            "UPDATE clusters SET count = "
+            "(SELECT COUNT(*) FROM faces WHERE faces.cluster_id = clusters.id)")
+        conn.commit()
+    print(f"[assign] {len(updates)}/{len(keep)} new faces joined existing people")
+    return len(updates)
 
-        available = set(ort.get_available_providers())
-    except Exception:
-        available = set()
-    if "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"], 0
-    if "CoreMLExecutionProvider" in available:
-        return ["CoreMLExecutionProvider", "CPUExecutionProvider"], 0
-    return ["CPUExecutionProvider"], -1
+
+def _fix_nested_model_dir(model: str) -> None:
+    """Undo insightface's double-nested model unzip.
+
+    The antelopev2 archive expands to <root>/antelopev2/antelopev2/*.onnx while
+    the loader only looks one level down, so a fresh download fails with a bare
+    "assert 'detection' in self.models". Lift the files up once if we find them
+    stranded there.
+    """
+    root = Path.home() / ".insightface" / "models" / model
+    nested = root / model
+    if not nested.is_dir() or any(root.glob("*.onnx")):
+        return
+    moved = 0
+    for f in nested.glob("*.onnx"):
+        f.rename(root / f.name)
+        moved += 1
+    if moved:
+        try:
+            nested.rmdir()
+        except OSError:
+            pass
+        print(f"[init] flattened {moved} model files out of {nested}")
 
 
 def main() -> None:
@@ -267,15 +394,46 @@ def main() -> None:
     conn.execute("PRAGMA journal_mode=WAL;")
     ensure_schema(conn)
 
-    print("[init] loading face model (insightface buffalo_l)...")
-    providers, ctx_id = _onnx_providers()
-    print(f"[init] onnxruntime providers: {providers} (ctx_id={ctx_id})")
-    app = FaceAnalysis(name="buffalo_l", providers=providers)
+    # antelopev2 (glint360k R100) separates faces markedly better than the
+    # older buffalo_l (webface600k R50); FACE_MODEL falls back to any pack
+    # insightface can fetch.
+    model = os.environ.get("FACE_MODEL", "antelopev2")
+    providers, ctx_id = gpu.onnx_providers()
+
+    prev = conn.execute(
+        "SELECT value FROM face_meta WHERE key = 'model'").fetchone()
+    prev = prev[0] if prev else None
+    if prev and prev != model:
+        # Old embeddings live in a different vector space; mixing them would
+        # scramble every cluster, so start the face table over.
+        n = conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0]
+        print(f"[init] model changed {prev} -> {model}: dropping {n} embeddings "
+              f"from the old model and re-detecting")
+        conn.execute("DELETE FROM faces")
+        conn.execute("DELETE FROM face_state")
+        conn.execute("DELETE FROM clusters")
+        conn.commit()
+    conn.execute("INSERT OR REPLACE INTO face_meta (key, value) VALUES ('model', ?)",
+                 (model,))
+    conn.commit()
+
+    print(f"[init] loading face model (insightface {model})...")
+    _fix_nested_model_dir(model)
+    print(f"[init] accelerator: {gpu.describe_onnx(providers)} "
+          f"(providers={providers}, ctx_id={ctx_id})")
+    app = FaceAnalysis(name=model, providers=providers)
     app.prepare(ctx_id=ctx_id, det_size=(640, 640))
 
     limit = int(os.environ.get("FACE_LIMIT", "0")) or None
     detect(app, conn, batch_limit=limit)
-    cluster(conn)
+
+    # A full recluster rebuilds every group; incremental only files new faces
+    # into the people already known. FACE_INCREMENTAL=1 is the cheap path for
+    # a routine run after new photos land.
+    if os.environ.get("FACE_INCREMENTAL", "0") in ("1", "true", "yes"):
+        assign_new(conn)
+    else:
+        cluster(conn)
 
 
 if __name__ == "__main__":
