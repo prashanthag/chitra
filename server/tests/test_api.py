@@ -455,18 +455,35 @@ class UploadTests(unittest.TestCase):
 # Feed ordering and the indexes behind it (shift-left perf checks)
 # ---------------------------------------------------------------------------
 
+def _add_album(album, names):
+    """Create a throwaway album dir + files and index them."""
+    d = os.path.join(MEDIA, album)
+    os.makedirs(d, exist_ok=True)
+    for name in names:
+        make_jpeg(os.path.join(d, name), (len(name), 9, 9))
+    chitra.scan_once()
+
+
+def _remove_album(album):
+    """Delete the dir and let the scanner prune its rows (shared fixture DB)."""
+    shutil.rmtree(os.path.join(MEDIA, album), ignore_errors=True)
+    chitra.scan_once()
+
+
 class SortIndexTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        for name, color in (("s1.jpg", (1, 0, 0)), ("s2.jpg", (0, 1, 0)), ("s3.jpg", (0, 0, 1))):
-            make_jpeg(os.path.join(MEDIA, "CameraX", name), color)
-        chitra.scan_once()
+        _add_album("SortAlbum", ["s1.jpg", "s2.jpg", "s3.jpg"])
         conn = chitra.sqlite3.connect(chitra.DB_PATH)
         conn.execute("UPDATE media SET taken_at=100 WHERE name='s1.jpg'")
         conn.execute("UPDATE media SET taken_at=300 WHERE name='s2.jpg'")
         conn.execute("UPDATE media SET taken_at=200 WHERE name='s3.jpg'")
         conn.commit()
         conn.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        _remove_album("SortAlbum")
 
     def test_dated_feed_is_newest_first(self):
         _, names = totals(dated=1)
@@ -482,7 +499,8 @@ class SortIndexTests(unittest.TestCase):
         conn.close()
         detail = " | ".join(r[3] for r in plan)
         self.assertNotIn("TEMP B-TREE", detail, detail)
-        self.assertIn("idx_media_dated", detail, detail)
+        # Either browse index has taken_at right after (trashed_at, archived).
+        self.assertRegex(detail, r"idx_media_(dated|undated)")
 
     def test_indexes_exist_after_init(self):
         conn = chitra.sqlite3.connect(chitra.DB_PATH)
@@ -492,11 +510,13 @@ class SortIndexTests(unittest.TestCase):
             self.assertIn(idx, names)
 
     def test_undated_feed_orders_by_file_date(self):
+        os.makedirs(os.path.join(MEDIA, "UndatedAlbum"), exist_ok=True)
+        self.addCleanup(_remove_album, "UndatedAlbum")
         for name in ("u_old.jpg", "u_new.jpg"):
-            make_jpeg(os.path.join(MEDIA, "CameraX", name), (5, 5, 5))
+            make_jpeg(os.path.join(MEDIA, "UndatedAlbum", name), (5, 5, 5))
         now = time.time()
-        os.utime(os.path.join(MEDIA, "CameraX", "u_old.jpg"), (now - 5000, now - 5000))
-        os.utime(os.path.join(MEDIA, "CameraX", "u_new.jpg"), (now - 10, now - 10))
+        os.utime(os.path.join(MEDIA, "UndatedAlbum", "u_old.jpg"), (now - 5000, now - 5000))
+        os.utime(os.path.join(MEDIA, "UndatedAlbum", "u_new.jpg"), (now - 10, now - 10))
         chitra.scan_once()
         conn = chitra.sqlite3.connect(chitra.DB_PATH)
         conn.execute("UPDATE media SET taken_at=NULL WHERE name IN ('u_old.jpg','u_new.jpg')")
@@ -534,3 +554,29 @@ class CacheHeaderTests(unittest.TestCase):
         self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")
         r = client.get("/api/media", query_string={"per_page": 5})
         self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")
+
+
+class AlbumCoverTests(unittest.TestCase):
+    def test_album_count_and_cover_is_newest_non_trashed(self):
+        _add_album("CoverAlbum", ["alb_a.jpg", "alb_b.jpg", "alb_c.jpg"])
+        self.addCleanup(_remove_album, "CoverAlbum")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for name, ts in (("alb_a.jpg", 1000), ("alb_b.jpg", 3000), ("alb_c.jpg", 2000)):
+            conn.execute("UPDATE media SET taken_at=? WHERE name=?", (ts, name))
+        # Newest one trashed: cover must fall back to the next newest.
+        conn.execute("UPDATE media SET trashed_at=1 WHERE name='alb_b.jpg'")
+        conn.commit()
+        conn.close()
+        albums = {a["album"]: a for a in client.get("/api/albums").get_json()}
+        self.assertEqual(albums["CoverAlbum"]["count"], 2)
+        self.assertEqual(albums["CoverAlbum"]["cover"], id_of("alb_c.jpg"))
+
+    def test_undated_feed_needs_no_sort_step(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT m.id FROM media m WHERE m.trashed_at IS NULL "
+            "AND m.archived = 0 AND m.kind = 'photo' AND m.taken_at IS NULL "
+            "AND m.album != 'uploads' ORDER BY m.mtime DESC LIMIT 80").fetchall()
+        conn.close()
+        detail = " | ".join(r[3] for r in plan)
+        self.assertNotIn("TEMP B-TREE", detail, detail)
