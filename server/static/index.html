@@ -172,6 +172,7 @@
     <div class="item" data-view="albums"><span class="ic">▤</span> Albums</div>
     <div class="item" data-view="cameras"><span class="ic">▣</span> Cameras</div>
     <div class="item" data-view="videos"><span class="ic">▷</span> Videos</div>
+    <div class="item" data-view="uploads"><span class="ic">⇪</span> Recently uploaded</div>
     <div class="sep"></div>
     <div class="label">Unknown date</div>
     <div class="item" data-view="unknown-photos"><span class="ic">▦</span> Photos</div>
@@ -281,6 +282,9 @@ function viewParams(p){
   if(v==='videos') p.set('dated','1');
   if(v==='unknown-photos'){ p.set('undated','1'); p.set('kind','photo'); }
   if(v==='unknown-videos'){ p.set('undated','1'); p.set('kind','video'); }
+  // Recently uploaded: the phone/web upload album, newest upload first
+  // (by when it arrived, not when it was shot).
+  if(v==='uploads'){ p.set('album','uploads'); p.set('sort','added'); }
   Object.entries(state.params).forEach(([k,val])=> p.set(k,val));
   return p;
 }
@@ -307,9 +311,17 @@ function tileHTML(m, idx){
   const fav = m.favorite? '<span class="fav">★</span>':'';
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
   const on = state.sel.has(m.id)? ' selected':'';
-  const ts = m.taken_at || '';
+  const ts = (state.view==='uploads' ? m.added_at : m.taken_at) || '';
   return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
-    <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
+    <img loading="lazy" src="${thumbUrl(m)}" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
+}
+// Versioned thumb URL: the server marks it immutable, so a reload never
+// re-fetches a tile; edit/rotate bump edit_version and thereby the URL.
+function thumbUrl(m){ return `/api/media/${m.id}/thumb?v=${m.edit_version||0}`; }
+function dayKey(ts){
+  if(!ts) return 'Upload date unknown';
+  const d = new Date(ts*1000);
+  return isNaN(d)? 'Upload date unknown' : 'Uploaded '+d.toLocaleDateString(undefined, {day:'numeric', month:'long', year:'numeric'});
 }
 function monthKey(m){
   // Label only from the real capture date — a missing date is "unknown",
@@ -326,7 +338,7 @@ function appendTiles(items){
   let html = '';
   items.forEach((m,i)=>{
     if(withHeaders){
-      const mk = monthKey(m);
+      const mk = state.view==='uploads' ? dayKey(m.added_at) : monthKey(m);
       if(mk && mk !== state.lastMonth){ state.lastMonth = mk; html += `<div class="mhead">${esc(mk)}</div>`; }
     }
     html += tileHTML(m, offset+i);
@@ -747,11 +759,13 @@ async function uploadFiles(fileList){
     const r = await fetch('/api/upload', {method:'POST', body:fd});
     if(!r.ok) throw {status:r.status};
     const data = await r.json();
-    const ok = (data.items||[]).filter(i=>i.indexed).length;
-    toast(`Uploaded ${ok}/${data.count} — added to library`);
+    const items = data.items||[];
+    const dup = items.filter(i=>i.duplicate).length;
+    const ok = items.filter(i=>i.indexed).length - dup;
+    toast(`Uploaded ${ok}/${data.count}` + (dup? ` (${dup} already in library)` : ''));
     refreshHealth();
-    // jump to Photos and reload so the new items show at the top
-    switchView('photos');
+    // Uploads live in their own album, so show them where they land.
+    switchView('uploads');
   }catch(e){ toast('Upload failed ('+(e.status||e)+')'); }
   $('#fileInput').value = '';
 }
@@ -790,7 +804,7 @@ document.querySelector('main').addEventListener('scroll', ()=>{
 
 // ---------- infinite scroll ----------
 io = new IntersectionObserver(entries=>{
-  if(entries[0].isIntersecting && ['photos','favorites','videos','trash','unknown-photos','unknown-videos'].includes(state.view)) loadGrid(false);
+  if(entries[0].isIntersecting && ['photos','favorites','videos','trash','unknown-photos','unknown-videos','uploads'].includes(state.view)) loadGrid(false);
 }, {rootMargin:'600px'});
 io.observe($('#sentinel'));
 

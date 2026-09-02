@@ -150,9 +150,29 @@ def init_db() -> None:
     _add_column_if_missing(conn, "media", "edit_version INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing(conn, "media", "camera_make TEXT")
     _add_column_if_missing(conn, "media", "camera_model TEXT")
+    # When the row first entered the index (upload or scan). Drives the
+    # "Recently uploaded" view; taken_at says when it was shot, not added.
+    _add_column_if_missing(conn, "media", "added_at REAL")
+    conn.execute("UPDATE media SET added_at = mtime WHERE added_at IS NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_latlng ON media(lat, lng)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_camera ON media(camera_model)")
+    # Browse indexes: every feed filters on (trashed_at, archived) and then
+    # orders by capture date (dated views), file date (undated views) or
+    # added_at (recent uploads). Each is a prefix walk with no sort step, so
+    # a page costs ~1 ms instead of a 40k-row scan + temp b-tree sort.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_dated "
+        "ON media(trashed_at, archived, taken_at DESC, album)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_mtime "
+        "ON media(trashed_at, archived, mtime DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_media_added "
+        "ON media(album, trashed_at, added_at DESC)"
+    )
     conn.commit()
     conn.close()
 
@@ -318,8 +338,9 @@ def scan_once() -> None:
         cur.executemany(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng,
-                camera_make, camera_model)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                camera_make, camera_model, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                       COALESCE((SELECT added_at FROM media WHERE id = ?), ?))""",
             batch,
         )
         conn.commit()
@@ -381,6 +402,8 @@ def scan_once() -> None:
                     lng,
                     cam_make,
                     cam_model,
+                    mid,
+                    time.time(),
                 )
             )
             _scan_state["scanned"] += 1
@@ -639,6 +662,28 @@ def _readonly_guard():
         return jsonify({"ok": False, "error": "read-only library"}), 403
 
 
+@app.before_request
+def _start_timer():
+    g.t0 = time.perf_counter()
+
+
+LOG_REQUESTS = os.environ.get("LOG_REQUESTS", "1").lower() in ("1", "true", "yes")
+
+
+@app.after_request
+def _timing(resp):
+    """Server-Timing lets a browser's devtools (and tests/bench_latency.py)
+    see how long the app itself took, separate from network time."""
+    t0 = g.pop("t0", None)
+    if t0 is not None:
+        ms = (time.perf_counter() - t0) * 1000
+        resp.headers["Server-Timing"] = f"app;dur={ms:.1f}"
+        if LOG_REQUESTS:
+            print(f"[req] {request.method} {request.full_path.rstrip('?')} "
+                  f"{resp.status_code} {ms:.1f}ms", flush=True)
+    return resp
+
+
 @app.teardown_appcontext
 def _close_db(_exc):
     conn = g.pop("db", None)
@@ -693,9 +738,11 @@ def list_media():
     trashed_only = request.args.get("trashed") in ("1", "true")
     archived_only = request.args.get("archived") in ("1", "true")
 
+    sort = request.args.get("sort", "taken")
+
     sql_select = (
         "SELECT m.id,m.name,m.kind,m.ext,m.mime,m.size,m.taken_at,"
-        "m.width,m.height,m.album,m.trashed_at,m.archived, "
+        "m.width,m.height,m.album,m.trashed_at,m.archived,m.edit_version,m.added_at, "
         "CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite "
         "FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
     )
@@ -757,17 +804,28 @@ def list_media():
             pass
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    sql = (
-        sql_select
-        + where_sql
-        + " ORDER BY COALESCE(m.taken_at, m.mtime) DESC LIMIT ? OFFSET ?"
-    )
+    # Pick the ORDER BY that matches an index prefix (see init_db). A dated
+    # feed is ordered by taken_at alone (identical to the COALESCE when
+    # taken_at is never NULL), an undated feed by mtime alone.
+    if sort == "added":
+        order = "COALESCE(m.added_at, m.mtime) DESC"
+    elif request.args.get("dated") in ("1", "true"):
+        order = "m.taken_at DESC"
+    elif request.args.get("undated") in ("1", "true"):
+        order = "m.mtime DESC"
+    else:
+        order = "COALESCE(m.taken_at, m.mtime) DESC"
+    sql = sql_select + where_sql + f" ORDER BY {order} LIMIT ? OFFSET ?"
     args_full = args + [per_page, (page - 1) * per_page]
     rows = [dict(r) for r in db().execute(sql, args_full).fetchall()]
+    # The favorites join only matters when filtering on it; skipping it lets
+    # the count run as a covering-index walk.
+    count_from = (
+        "FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
+        if favorites_only else "FROM media m"
+    )
     total = db().execute(
-        "SELECT COUNT(*) AS n FROM media m LEFT JOIN favorites f ON f.media_id = m.id"
-        + where_sql,
-        args,
+        "SELECT COUNT(*) AS n " + count_from + where_sql, args,
     ).fetchone()["n"]
     return jsonify(
         {"page": page, "per_page": per_page, "total": total, "items": rows}
@@ -840,12 +898,22 @@ def memories():
 
 
 _clip_state: dict = {"model": None, "tok": None, "embs": None, "ids": None}
+_clip_lock = threading.Lock()
 
 
 def _load_clip_index():
-    """Lazy-load CLIP model + image embedding matrix on first semantic search."""
+    """Lazy-load CLIP model + image embedding matrix on first semantic search.
+    Single-flight: concurrent first callers (the app fires /memories and
+    /search together) wait for one load instead of each loading a model."""
     if _clip_state["embs"] is not None:
         return True
+    with _clip_lock:
+        if _clip_state["embs"] is not None:
+            return True
+        return _load_clip_index_locked()
+
+
+def _load_clip_index_locked():
     try:
         import numpy as np
         import open_clip
@@ -1032,6 +1100,16 @@ def upload_media():
             continue
         # Strip path components from filename
         safe_name = Path(f.filename).name
+        # Same name + byte size as something already in the library means the
+        # phone is re-sending a file we have (reinstall, cleared app data,
+        # second device with the same camera roll). Skip it instead of
+        # minting IMG_0001_1.jpg copies.
+        size_hint = _stream_size(f.stream)
+        dup = _find_duplicate(safe_name, size_hint)
+        if dup is not None:
+            saved.append({"id": dup, "name": safe_name, "indexed": True,
+                          "duplicate": True})
+            continue
         dest = upload_dir / safe_name
         # Avoid clobber
         i = 1
@@ -1063,17 +1141,61 @@ def upload_media():
         db().execute(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album,
-                lat, lng, camera_make, camera_model)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                lat, lng, camera_make, camera_model, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 mid, str(dest), safe_name, kind, ext, mime,
                 st.st_size, st.st_mtime, taken, width, height, album,
                 exif.get("lat"), exif.get("lng"), exif.get("make"), exif.get("model"),
+                time.time(),
             ),
         )
         db().commit()
-        saved.append({"id": mid, "name": safe_name, "indexed": True, "kind": kind})
+        # dest.name is the stored name (may carry a _1 suffix on a name clash).
+        saved.append({"id": mid, "name": dest.name, "indexed": True, "kind": kind})
     return jsonify({"ok": True, "count": len(saved), "items": saved})
+
+
+def _stream_size(stream) -> int | None:
+    """Byte length of an uploaded part without consuming it (werkzeug spools
+    parts to a seekable temp file / BytesIO)."""
+    try:
+        pos = stream.tell()
+        stream.seek(0, 2)
+        size = stream.tell()
+        stream.seek(pos)
+        return size
+    except Exception:
+        return None
+
+
+def _find_duplicate(name: str, size: int | None) -> str | None:
+    if size is None:
+        return None
+    r = db().execute(
+        "SELECT id FROM media WHERE name = ? AND size = ? AND trashed_at IS NULL "
+        "LIMIT 1", (name, size),
+    ).fetchone()
+    return r["id"] if r else None
+
+
+@app.post("/api/upload/check")
+def upload_check():
+    """Pre-flight for backup clients: which of these (name, size) pairs are
+    already in the library? Lets a phone skip files it has sent before
+    without moving a byte, so a reinstall doesn't re-send the camera roll."""
+    body = request.get_json(silent=True) or {}
+    files = body.get("files") or []
+    if not isinstance(files, list) or len(files) > 500:
+        return jsonify({"ok": False, "error": "files must be a list of <=500"}), 400
+    out = []
+    for f in files:
+        try:
+            dup = _find_duplicate(Path(str(f.get("name", ""))).name, int(f.get("size")))
+        except (TypeError, ValueError, AttributeError):
+            dup = None
+        out.append(dup)
+    return jsonify({"ok": True, "ids": out, "exists": [d is not None for d in out]})
 
 
 # ---------- Locations / Map ----------
@@ -1492,9 +1614,25 @@ def media_meta(mid: str):
     return jsonify(d)
 
 
+# Thumbnails only change when the photo is edited/rotated, which bumps
+# edit_version; clients put that in ?v= so a versioned URL can be cached
+# forever. An unversioned URL still gets a short max-age so a page reload
+# is served from the browser/Coil cache instead of 80 round trips.
+THUMB_MAX_AGE_VERSIONED = 365 * 24 * 3600
+THUMB_MAX_AGE_PLAIN = 600
+
+
+def _thumb_max_age() -> int:
+    return THUMB_MAX_AGE_VERSIONED if request.args.get("v") else THUMB_MAX_AGE_PLAIN
+
+
 @app.get("/api/media/<mid>/thumb")
 def media_thumb(mid: str):
-    r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
+    # Only the columns ensure_thumb needs: SELECT * would drag the CLIP
+    # embedding BLOB through for every tile.
+    r = db().execute(
+        "SELECT id, path, kind FROM media WHERE id = ?", (mid,)
+    ).fetchone()
     if not r:
         abort(404)
     p = ensure_thumb(r)
@@ -1502,9 +1640,14 @@ def media_thumb(mid: str):
         # Unreadable/corrupt source — serve a neutral placeholder so the grid
         # shows a tile instead of a broken image + noisy 500.
         return send_file(
-            io.BytesIO(_placeholder_thumb()), mimetype="image/jpeg"
+            io.BytesIO(_placeholder_thumb()), mimetype="image/jpeg",
+            max_age=THUMB_MAX_AGE_PLAIN,
         )
-    return send_file(p, mimetype="image/jpeg", conditional=True)
+    resp = send_file(p, mimetype="image/jpeg", conditional=True,
+                     max_age=_thumb_max_age())
+    if request.args.get("v"):
+        resp.headers["Cache-Control"] += ", immutable"
+    return resp
 
 
 @app.get("/api/media/<mid>/stream.mp4")
@@ -1631,7 +1774,7 @@ def cluster_media(cid: int):
 def cluster_thumb(cid: int):
     p = cluster_thumb_path(cid)
     if p.exists() and p.stat().st_size > 0:
-        return send_file(p, mimetype="image/jpeg")
+        return send_file(p, mimetype="image/jpeg", conditional=True, max_age=3600)
     r = db().execute(
         """SELECT f.bbox, m.path FROM clusters c
            JOIN faces f ON f.id = c.rep_face_id
@@ -1658,7 +1801,7 @@ def cluster_thumb(cid: int):
             crop = im.crop((x1, y1, x2, y2))
             crop.thumbnail((256, 256), Image.LANCZOS)
             crop.save(p, "JPEG", quality=82)
-        return send_file(p, mimetype="image/jpeg")
+        return send_file(p, mimetype="image/jpeg", conditional=True, max_age=3600)
     except Exception as e:
         print(f"[cluster thumb] failed: {e}")
         abort(500)
@@ -1766,6 +1909,16 @@ def favicon():
 # ---------- Entrypoint ----------
 
 
+def _lower_priority() -> None:
+    """Drop the calling thread's CPU priority (Linux nice is per-thread, and
+    threads spawned afterwards inherit it). Background work must lose to
+    request handling, never the other way round."""
+    try:
+        os.nice(10)
+    except (OSError, AttributeError):
+        pass
+
+
 def start_thumb_warmer() -> None:
     """Pre-generate missing thumbnails in the background (THUMB_WARM=1) so
     grids don't pay the ffmpeg/decode cost on first view."""
@@ -1773,6 +1926,7 @@ def start_thumb_warmer() -> None:
         from concurrent.futures import ThreadPoolExecutor
         while _scan_state.get("running"):
             time.sleep(5)
+        _lower_priority()
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         # Photos first: they cost ~100ms each vs seconds per video, so the
@@ -1794,18 +1948,58 @@ def start_thumb_warmer() -> None:
     threading.Thread(target=loop, daemon=True, name="thumbwarm").start()
 
 
+def start_clip_warmer() -> None:
+    """Load the CLIP model + embedding matrix in the background after the
+    startup scan, so the first /api/memories (which the phone app calls on
+    every refresh) doesn't pay the multi-second model load."""
+    def loop():
+        while _scan_state.get("running"):
+            time.sleep(2)
+        t0 = time.time()
+        with app.app_context():
+            ok = _load_clip_index()
+        print(f"[clipwarm] {'loaded' if ok else 'unavailable'} in {time.time() - t0:.1f}s")
+    threading.Thread(target=loop, daemon=True, name="clipwarm").start()
+
+
+def _serve(host: str, port: int) -> None:
+    """Waitress when available: a fixed thread pool with HTTP keep-alive, so a
+    grid of 80 thumbnails rides 6 connections instead of 80 TCP handshakes
+    (werkzeug's dev server answers every request with Connection: close).
+    CHITRA_SERVER=werkzeug forces the dev server."""
+    want = os.environ.get("CHITRA_SERVER", "waitress").lower()
+    if want != "werkzeug":
+        try:
+            from waitress import serve
+        except ImportError:
+            serve = None
+        if serve is not None:
+            threads = int(os.environ.get("THREADS", "16"))
+            print(f"[server] waitress, {threads} threads, keep-alive on")
+            serve(
+                app, host=host, port=port, threads=threads,
+                max_request_body_size=app.config["MAX_CONTENT_LENGTH"],
+                channel_timeout=300, ident="chitra",
+            )
+            return
+        print("[server] waitress not installed; falling back to werkzeug")
+    app.run(host=host, port=port, threaded=True)
+
+
 def main() -> None:
     init_db()
     start_background_scan()
     start_purge_loop()
     if os.environ.get("THUMB_WARM", "0").lower() in ("1", "true", "yes"):
         start_thumb_warmer()
+    if os.environ.get("CLIP_WARM", "1").lower() in ("1", "true", "yes"):
+        start_clip_warmer()
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", 8000))
     print(f"[server] listening on http://{host}:{port}")
     print(f"[server] media root: {MEDIA_ROOT}")
     print(f"[server] video backend: {gpu.describe(VIDEO_BACKEND)}")
-    app.run(host=host, port=port, threaded=True)
+    _serve(host, port)
 
 
 if __name__ == "__main__":

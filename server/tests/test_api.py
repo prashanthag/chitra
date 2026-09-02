@@ -27,6 +27,7 @@ os.makedirs(os.path.join(MEDIA, "uploads", "2026-08-08"))
 os.environ["PHOTO_ROOT"] = MEDIA
 os.environ["CACHE_DIR"] = CACHE
 os.environ["CHITRA_READONLY"] = "0"
+os.environ["LOG_REQUESTS"] = "0"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -353,3 +354,183 @@ class DetailTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---------------------------------------------------------------------------
+# Uploads: multi-file, de-duplication, pre-flight check, recently uploaded
+# ---------------------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+
+def _jpeg(color, size=(40, 40)):
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "JPEG")
+    buf.seek(0)
+    return buf
+
+
+def _upload(parts):
+    r = client.post("/api/upload", data=parts, content_type="multipart/form-data")
+    assert r.status_code == 200, (r.status_code, r.data[:200])
+    return r.get_json()
+
+
+def _row(name, col):
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    v = conn.execute(f"SELECT {col} FROM media WHERE name=?", (name,)).fetchone()
+    conn.close()
+    return v[0] if v else None
+
+
+class UploadTests(unittest.TestCase):
+    def test_multi_file_upload_saves_every_part(self):
+        # The phone sends file_0, file_1, ...; the web client repeats 'file'.
+        d = _upload({
+            "file_0": (_jpeg((1, 2, 3)), "multi_a.jpg"),
+            "file_1": (_jpeg((4, 5, 6)), "multi_b.jpg"),
+            "file": [(_jpeg((7, 8, 9)), "multi_c.jpg"), (_jpeg((9, 9, 9), (48, 48)), "multi_d.jpg")],
+        })
+        self.assertEqual(d["count"], 4)
+        self.assertEqual(sorted(i["name"] for i in d["items"]),
+                         ["multi_a.jpg", "multi_b.jpg", "multi_c.jpg", "multi_d.jpg"])
+        self.assertTrue(all(i["indexed"] and not i.get("duplicate") for i in d["items"]))
+        _, names = totals(album="uploads")
+        for n in ("multi_a.jpg", "multi_b.jpg", "multi_c.jpg", "multi_d.jpg"):
+            self.assertIn(n, names)
+
+    def test_duplicate_upload_is_skipped_not_copied(self):
+        raw = _jpeg((50, 60, 70)).getvalue()
+        first = _upload({"file": (io.BytesIO(raw), "dup.jpg")})["items"][0]
+        second = _upload({"file": (io.BytesIO(raw), "dup.jpg")})["items"][0]
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(second["id"], first["id"])
+        on_disk = [p.name for p in Path(MEDIA, "uploads").rglob("dup*")]
+        self.assertEqual(on_disk, ["dup.jpg"])
+        # Same name, different bytes (different size) is NOT a duplicate:
+        # it lands beside the original under a suffixed name.
+        third = _upload({"file": (_jpeg((50, 60, 70), (100, 100)), "dup.jpg")})["items"][0]
+        self.assertFalse(third.get("duplicate"))
+        self.assertEqual(third["name"], "dup_1.jpg")
+
+    def test_upload_check_reports_existing_pairs(self):
+        _upload({"file": (_jpeg((11, 22, 33)), "chk.jpg")})
+        size = _row("chk.jpg", "size")
+        r = client.post("/api/upload/check", json={"files": [
+            {"name": "chk.jpg", "size": size},
+            {"name": "chk.jpg", "size": size + 1},
+            {"name": "/sdcard/DCIM/chk.jpg", "size": size},   # path stripped
+            {"name": "nope.jpg", "size": 10},
+            {"name": "bad", "size": "x"},
+        ]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["exists"], [True, False, True, False, False])
+        self.assertEqual(client.post("/api/upload/check", json={"files": "x"}).status_code, 400)
+
+    def test_recently_uploaded_orders_by_added_at(self):
+        _upload({"file": (_jpeg((1, 1, 1)), "older_up.jpg")})
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET added_at = added_at - 1000 WHERE name='older_up.jpg'")
+        conn.commit()
+        conn.close()
+        _upload({"file": (_jpeg((2, 2, 2)), "newer_up.jpg")})
+        r = client.get("/api/media", query_string={"album": "uploads", "sort": "added", "per_page": 200})
+        items = r.get_json()["items"]
+        names = [i["name"] for i in items]
+        self.assertLess(names.index("newer_up.jpg"), names.index("older_up.jpg"))
+        self.assertIsNotNone(items[0]["added_at"])
+        self.assertIn("edit_version", items[0])
+
+    def test_rescan_keeps_added_at(self):
+        _upload({"file": (_jpeg((3, 3, 3)), "keep_added.jpg")})
+        before = _row("keep_added.jpg", "added_at")
+        path = _row("keep_added.jpg", "path")
+        os.utime(path, (time.time() + 5, time.time() + 5))   # file "changed"
+        chitra.scan_once()
+        self.assertEqual(_row("keep_added.jpg", "added_at"), before)
+        self.assertNotEqual(_row("keep_added.jpg", "mtime"), None)
+
+
+# ---------------------------------------------------------------------------
+# Feed ordering and the indexes behind it (shift-left perf checks)
+# ---------------------------------------------------------------------------
+
+class SortIndexTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        for name, color in (("s1.jpg", (1, 0, 0)), ("s2.jpg", (0, 1, 0)), ("s3.jpg", (0, 0, 1))):
+            make_jpeg(os.path.join(MEDIA, "CameraX", name), color)
+        chitra.scan_once()
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET taken_at=100 WHERE name='s1.jpg'")
+        conn.execute("UPDATE media SET taken_at=300 WHERE name='s2.jpg'")
+        conn.execute("UPDATE media SET taken_at=200 WHERE name='s3.jpg'")
+        conn.commit()
+        conn.close()
+
+    def test_dated_feed_is_newest_first(self):
+        _, names = totals(dated=1)
+        sub = [n for n in names if n in ("s1.jpg", "s2.jpg", "s3.jpg")]
+        self.assertEqual(sub, ["s2.jpg", "s3.jpg", "s1.jpg"])
+
+    def test_dated_feed_needs_no_sort_step(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT m.id FROM media m WHERE m.trashed_at IS NULL "
+            "AND m.archived = 0 AND m.taken_at IS NOT NULL AND m.album != 'uploads' "
+            "ORDER BY m.taken_at DESC LIMIT 80").fetchall()
+        conn.close()
+        detail = " | ".join(r[3] for r in plan)
+        self.assertNotIn("TEMP B-TREE", detail, detail)
+        self.assertIn("idx_media_dated", detail, detail)
+
+    def test_indexes_exist_after_init(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        names = {r[1] for r in conn.execute("PRAGMA index_list(media)")}
+        conn.close()
+        for idx in ("idx_media_dated", "idx_media_mtime", "idx_media_added"):
+            self.assertIn(idx, names)
+
+    def test_undated_feed_orders_by_file_date(self):
+        for name in ("u_old.jpg", "u_new.jpg"):
+            make_jpeg(os.path.join(MEDIA, "CameraX", name), (5, 5, 5))
+        now = time.time()
+        os.utime(os.path.join(MEDIA, "CameraX", "u_old.jpg"), (now - 5000, now - 5000))
+        os.utime(os.path.join(MEDIA, "CameraX", "u_new.jpg"), (now - 10, now - 10))
+        chitra.scan_once()
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET taken_at=NULL WHERE name IN ('u_old.jpg','u_new.jpg')")
+        conn.commit()
+        conn.close()
+        _, names = totals(undated=1, kind="photo")
+        sub = [n for n in names if n in ("u_old.jpg", "u_new.jpg")]
+        self.assertEqual(sub, ["u_new.jpg", "u_old.jpg"])
+
+
+# ---------------------------------------------------------------------------
+# HTTP caching and timing headers
+# ---------------------------------------------------------------------------
+
+class CacheHeaderTests(unittest.TestCase):
+    def test_thumb_cache_headers(self):
+        mid = id_of("one.jpg")
+        r = client.get(f"/api/media/{mid}/thumb")
+        self.assertEqual(r.status_code, 200)
+        cc = r.headers["Cache-Control"]
+        self.assertIn("max-age=600", cc)
+        self.assertNotIn("immutable", cc)
+        self.assertIn("ETag", r.headers)
+        # Versioned URL: cache for a year, immutable.
+        r2 = client.get(f"/api/media/{mid}/thumb?v=3")
+        cc2 = r2.headers["Cache-Control"]
+        self.assertIn("max-age=31536000", cc2)
+        self.assertIn("immutable", cc2)
+        # Conditional revalidation still works for clients that do it.
+        r3 = client.get(f"/api/media/{mid}/thumb", headers={"If-None-Match": r.headers["ETag"]})
+        self.assertEqual(r3.status_code, 304)
+
+    def test_server_timing_header_on_every_response(self):
+        r = client.get("/api/health")
+        self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")
+        r = client.get("/api/media", query_string={"per_page": 5})
+        self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")

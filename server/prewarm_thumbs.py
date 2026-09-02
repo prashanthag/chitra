@@ -5,6 +5,12 @@ from pathlib import Path
 import app  # reuse the server's thumb logic (no Flask server started)
 
 APP_DIR = Path(__file__).resolve().parent
+
+# Background job: lose to the live server's request threads, never win.
+try:
+    os.nice(10)
+except (OSError, AttributeError):
+    pass
 DB_PATH = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache")) / "index.db"
 
 # sqlite3.connect() would silently create an empty DB and report 0 items.
