@@ -23,6 +23,10 @@ data class MediaItem(
     val place: String? = null,
     @SerialName("camera_make") val cameraMake: String? = null,
     @SerialName("camera_model") val cameraModel: String? = null,
+    /** Bumped by the server on edit/rotate; goes into the thumb URL as ?v= for cache-busting. */
+    @SerialName("edit_version") val editVersion: Int = 0,
+    /** When the item entered the library (upload time), epoch seconds. */
+    @SerialName("added_at") val addedAt: Double? = null,
 )
 
 @Serializable

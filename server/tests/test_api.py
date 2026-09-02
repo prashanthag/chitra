@@ -223,6 +223,13 @@ class ReadOnlyTests(unittest.TestCase):
         self.assertEqual(client.post(f"/api/media/{mid}/favorite").status_code, 200)
         client.post(f"/api/media/{mid}/favorite")
 
+    def test_upload_check_allowed_in_safe_mode(self):
+        # The phone pre-flights every backup batch through this POST; it reads
+        # the index and writes nothing, so safe mode must let it through.
+        r = client.post("/api/upload/check", json={"files": [{"name": "x.jpg", "size": 1}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["exists"], [False])
+
     def test_upload_allowed_and_lands_in_uploads_album(self):
         buf = io.BytesIO()
         Image.new("RGB", (32, 32), (200, 200, 0)).save(buf, "JPEG")

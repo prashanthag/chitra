@@ -33,6 +33,8 @@ interface PhotoApi {
         @Query("archived") archived: Int? = null,
         @Query("dated") dated: Int? = null,
         @Query("undated") undated: Int? = null,
+        /** "added" = newest upload first (Recently uploaded); default is capture date. */
+        @Query("sort") sort: String? = null,
     ): MediaPage
 
     @GET("api/albums")
@@ -122,8 +124,9 @@ interface PhotoApi {
 }
 
 object Urls {
-    fun thumb(baseUrl: String, id: String): String =
-        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb"
+    /** Versioned thumb URL: the server marks ?v= responses immutable, so Coil never re-fetches. */
+    fun thumb(baseUrl: String, id: String, version: Int = 0): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb?v=$version"
 
     fun full(baseUrl: String, id: String, asJpeg: Boolean = false): String {
         val base = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"

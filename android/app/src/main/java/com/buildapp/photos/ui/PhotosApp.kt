@@ -88,6 +88,7 @@ private sealed interface Route {
     data class AlbumMedia(val album: Album) : Route
     data object Map : Route
     data class Editor(val item: MediaItem) : Route
+    data object Settings : Route
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -96,7 +97,6 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var liveViewerIndex by remember { mutableStateOf<Int?>(null) }
     var staticViewer by remember { mutableStateOf<Pair<List<MediaItem>, Int>?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var route by remember { mutableStateOf<Route>(Route.Gallery) }
     val snackbar = remember { SnackbarHostState() }
@@ -106,12 +106,11 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     // System back walks the UI hierarchy (viewer → overlays → sub-screen →
     // gallery) instead of killing the app; only exits from the home gallery.
     androidx.activity.compose.BackHandler(
-        enabled = liveViewerIndex != null || staticViewer != null || showSettings || showSearch || route != Route.Gallery
+        enabled = liveViewerIndex != null || staticViewer != null || showSearch || route != Route.Gallery
     ) {
         when {
             liveViewerIndex != null -> liveViewerIndex = null
             staticViewer != null -> staticViewer = null
-            showSettings -> showSettings = false
             showSearch -> showSearch = false
             route is Route.Editor -> route = Route.Gallery
             route is Route.ClusterMedia -> route = Route.People
@@ -119,23 +118,19 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             route != Route.Gallery -> route = Route.Gallery
         }
     }
+    // The photo picker caps multi-select at MediaStore.getPickImagesMaxLimit()
+    // (100 on Android 13+); 50 keeps one manual batch reasonable.
     val pickMedia = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50),
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            scope.launch {
-                snackbar.showSnackbar("Uploading ${uris.size}…")
-                val res = withContext(Dispatchers.IO) {
-                    com.buildapp.photos.data.Uploader.upload(context, state.serverUrl, uris)
-                }
-                res.fold(
-                    onSuccess = { n ->
-                        snackbar.showSnackbar("Uploaded $n")
-                        vm.refresh()
-                    },
-                    onFailure = { snackbar.showSnackbar("Upload failed: ${it.message}") },
-                )
-            }
+        if (uris.isNotEmpty()) vm.uploadPicked(uris)
+    }
+    // When a manual upload finishes, summarize it once and clear the bar.
+    LaunchedEffect(state.upload?.running) {
+        val u = state.upload
+        if (u != null && !u.running) {
+            snackbar.showSnackbar(u.summary)
+            vm.clearUpload()
         }
     }
 
@@ -227,6 +222,14 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             )
             return
         }
+        is Route.Settings -> {
+            SettingsScreen(
+                serverUrl = state.serverUrl,
+                onBack = { route = Route.Gallery },
+                onServerUrlSaved = { vm.setServerUrl(it) },
+            )
+            return
+        }
         else -> Unit
     }
 
@@ -270,7 +273,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     IconButton(onClick = { showSearch = !showSearch }) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }
-                    IconButton(onClick = { showSettings = true }) {
+                    IconButton(onClick = { route = Route.Settings }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
@@ -288,6 +291,18 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 )
             }
             FilterRow(current = state.filter, onSelect = { vm.setFilter(it) })
+            state.upload?.let { u ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    Text(
+                        if (u.running) "Uploading ${u.done}/${u.total}…" else u.summary,
+                        fontSize = 12.sp, color = Color.Gray,
+                    )
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { if (u.total == 0) 0f else u.done.toFloat() / u.total },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                }
+            }
             state.memories?.takeIf { it.groups.isNotEmpty() }?.let { mem ->
                 MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { staticViewer = listOf(it) to 0 })
             }
@@ -297,7 +312,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                         error = state.error!!,
                         serverUrl = state.serverUrl,
                         onRetry = { vm.refresh() },
-                        onSettings = { showSettings = true },
+                        onSettings = { route = Route.Settings },
                     )
                     state.items.isEmpty() && state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                         CircularProgressIndicator()
@@ -340,13 +355,6 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         )
     }
 
-    if (showSettings) {
-        SettingsDialog(
-            current = state.serverUrl,
-            onDismiss = { showSettings = false },
-            onSave = { vm.setServerUrl(it); showSettings = false },
-        )
-    }
 }
 
 private fun subtitleFor(state: GalleryState): String {
@@ -412,7 +420,7 @@ private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
             FilterChip(
                 selected = current == f,
                 onClick = { onSelect(f) },
-                label = { Text(f.name.lowercase().replaceFirstChar { it.titlecase() }) },
+                label = { Text(f.label) },
             )
         }
     }
@@ -532,7 +540,7 @@ private fun MemoriesRow(
                     ) {
                         AsyncImage(
                             model = ImageRequest.Builder(LocalContext.current)
-                                .data(Urls.thumb(serverUrl, item0.id))
+                                .data(Urls.thumb(serverUrl, item0.id, item0.editVersion))
                                 .crossfade(true)
                                 .build(),
                             contentDescription = null,
@@ -569,7 +577,7 @@ private fun Tile(item: MediaItem, serverUrl: String, onClick: () -> Unit) {
     ) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(Urls.thumb(serverUrl, item.id))
+                .data(Urls.thumb(serverUrl, item.id, item.editVersion))
                 .crossfade(true)
                 .build(),
             contentDescription = item.name,
@@ -620,70 +628,4 @@ private fun ErrorView(error: String, serverUrl: String, onRetry: () -> Unit, onS
             TextButton(onClick = onRetry) { Text("Retry") }
         }
     }
-}
-
-@Composable
-private fun SettingsDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var text by remember { mutableStateOf(current) }
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val settings = remember { com.buildapp.photos.data.SettingsRepository(context) }
-    val backupOn by settings.backupEnabled.collectAsState(initial = false)
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        if (grants.values.any { it }) {
-            scope.launch {
-                settings.setBackupEnabled(true)
-                com.buildapp.photos.data.BackupWorker.schedule(context)
-                android.widget.Toast.makeText(context, "Auto backup on — new photos upload on Wi-Fi", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            android.widget.Toast.makeText(context, "Photos permission needed for backup", android.widget.Toast.LENGTH_SHORT).show()
-        }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("http://host:port") },
-                )
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Auto backup", style = MaterialTheme.typography.bodyLarge)
-                        Text("Upload camera photos & videos over Wi-Fi",
-                            style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A9AA2))
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = backupOn,
-                        onCheckedChange = { want ->
-                            if (want) {
-                                val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
-                                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES,
-                                            android.Manifest.permission.READ_MEDIA_VIDEO)
-                                else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                permLauncher.launch(perms)
-                            } else {
-                                scope.launch {
-                                    settings.setBackupEnabled(false)
-                                    com.buildapp.photos.data.BackupWorker.cancel(context)
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSave(text.trim()) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }

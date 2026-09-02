@@ -664,7 +664,7 @@ def _readonly_guard():
     if not READ_ONLY or request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     allowed = (
-        request.path in ("/api/rescan", "/api/upload",
+        request.path in ("/api/rescan", "/api/upload", "/api/upload/check",
                          "/api/media/batch_trash", "/api/media/batch_restore")
         or request.path.endswith(("/favorite", "/trash", "/restore", "/name"))
         # Face/person labels describe the library rather than the files in it:
