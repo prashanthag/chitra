@@ -155,6 +155,72 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class RenditionTests(unittest.TestCase):
+    """?w= thumbnail sizes, the tiny placeholder tier, and the viewer preview."""
+
+    def _img(self, r):
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "image/jpeg")
+        return Image.open(io.BytesIO(r.data))
+
+    def test_sizes_snap_and_scale(self):
+        path = os.path.join(MEDIA, "CameraX", "big.jpg")
+        Image.new("RGB", (1600, 1200), (30, 60, 90)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("big.jpg")
+
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb")).size, (480, 360))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=160")).size, (160, 120))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=1024")).size, (1024, 768))
+        # Sizes snap up to the next tier; nonsense falls back to the default.
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=100")).size, (160, 120))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=abc")).size, (480, 360))
+        tiny = client.get(f"/api/media/{mid}/thumb?w=32&v=0")
+        self.assertEqual(self._img(tiny).size, (32, 24))
+        self.assertLess(len(tiny.data), 2000)
+        self.assertIn("immutable", tiny.headers["Cache-Control"])
+        # Only tier files exist in the cache, under predictable names.
+        names = sorted(p.name for p in chitra.THUMB_DIR.glob(f"{mid}*"))
+        self.assertEqual(names, sorted([f"{mid}.jpg", f"{mid}_160.jpg", f"{mid}_1024.jpg", f"{mid}_32.jpg"]))
+
+        # Preview: viewer-sized, and dropped with the thumbs when the file changes.
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview?v=0")).size, (1600, 1200))
+        self.assertTrue(chitra.preview_path_for(mid).exists())
+        self.assertEqual(client.post(f"/api/media/{mid}/rotate?degrees=90").status_code, 200)
+        self.assertFalse(chitra.preview_path_for(mid).exists())
+        self.assertEqual(list(chitra.THUMB_DIR.glob(f"{mid}*")), [])
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview?v=1")).size, (1200, 1600))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=32&v=1")).size, (24, 32))
+
+    def test_preview_caps_at_2048(self):
+        path = os.path.join(MEDIA, "CameraX", "huge.jpg")
+        Image.new("RGB", (4096, 2048), (5, 5, 5)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("huge.jpg")
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview")).size, (2048, 1024))
+
+    def test_placeholder_source_has_no_tiny_tier_pinned(self):
+        mid = id_of("two.jpg")
+        p = chitra.thumb_path_for(mid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(chitra._placeholder_thumb())
+        self.addCleanup(lambda: chitra.invalidate_thumbs(mid))
+        r = client.get(f"/api/media/{mid}/thumb?w=32&v=0")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("immutable", r.headers["Cache-Control"])
+        self.assertFalse(chitra.thumb_path_for(mid, 32).exists())
+
+
 class InfoPanelTests(unittest.TestCase):
     def test_detail_carries_exposure_settings_from_exif(self):
         path = os.path.join(MEDIA, "CameraX", "exposed.jpg")

@@ -58,7 +58,7 @@
           position:sticky; top:0; z-index:5;
           background:linear-gradient(var(--bg) 72%, transparent); }
   .mhead:first-child { padding-top:8px; }
-  .tile { position:relative; aspect-ratio:1; background:var(--panel2); cursor:pointer;
+  .tile { position:relative; aspect-ratio:1; background:var(--panel2) center/cover no-repeat; cursor:pointer;
           overflow:hidden; border-radius:4px; }
   .tile img { width:100%; height:100%; object-fit:cover; display:block; transition:transform .2s; }
   .tile:hover img { transform:scale(1.04); }
@@ -222,6 +222,7 @@
   <div class="top">
     <button class="iconbtn" onclick="closeViewer()">✕</button>
     <span class="grow"></span>
+    <button class="iconbtn" id="vFull" title="Open full size" onclick="openFull()">⤢</button>
     <button class="iconbtn" id="vId" title="ID / passport photo (white background)" onclick="idPhotoCurrent()">🪪</button>
     <button class="iconbtn" id="vShare" title="Share" onclick="shareCurrent()">⤴</button>
     <button class="iconbtn" id="vAlbum" title="Add to album" onclick="openAlbumPicker([curItem().id])">⊞</button>
@@ -341,12 +342,22 @@ function tileHTML(m, idx){
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
   const on = state.sel.has(m.id)? ' selected':'';
   const ts = (state.view==='uploads' ? m.added_at : m.taken_at) || '';
-  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
-    <img loading="lazy" src="${thumbUrl(m)}" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
+  // The ~1 KB 32px tier paints the tile's colour and shape immediately; the
+  // real thumb (lazy) covers it when it lands.
+  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}" style="background-image:url('${thumbUrl(m,32)}')">
+    <img loading="lazy" src="${thumbUrl(m, gridThumbW())}" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
 }
 // Versioned thumb URL: the server marks it immutable, so a reload never
 // re-fetches a tile; edit/rotate bump edit_version and thereby the URL.
-function thumbUrl(m){ return `/api/media/${m.id}/thumb?v=${m.edit_version||0}`; }
+// w picks a size tier (32 / 160 / 480 / 1024); omitted = the 480 default.
+function thumbUrl(m, w){ return `/api/media/${m.id}/thumb?v=${m.edit_version||0}${w? '&w='+w : ''}`; }
+function previewUrl(m){ return `/api/media/${m.id}/preview?v=${m.edit_version||0}`; }
+// Large tiles on a high-DPI screen would upscale the 480 thumb; ask for 1024.
+function gridThumbW(){
+  const t = document.querySelector('#grid .tile');
+  const px = (t? t.clientWidth : 200) * (window.devicePixelRatio || 1);
+  return px > 520 ? 1024 : 480;
+}
 function dayKey(ts){
   if(!ts) return 'Upload date unknown';
   const d = new Date(ts*1000);
@@ -725,12 +736,12 @@ function renderViewer(){
       });
     }
   }else{
-    // Browsers render JPEG/PNG/GIF/WebP natively; everything else gets
-    // converted server-side.
-    const native = ['.jpg','.jpeg','.png','.gif','.webp'].includes(m.ext);
-    const as = native? '' : '?as=jpeg';
-    stage.innerHTML = `<img src="/api/media/${m.id}/full${as}"/>`;
+    // The viewer shows the cached 2048px preview (any format, EXIF-rotated,
+    // immutable-cached), not the original: a 12 MP JPEG or a HEIC transcode
+    // per swipe was the slowest thing in the app. ⤢ opens the original.
+    stage.innerHTML = `<img src="${previewUrl(m)}"/>`;
   }
+  $('#vFull').style.display = m.kind==='video'? 'none':'';
   $('#vFav').classList.toggle('on', !!m.favorite);
   $('#tagpop').classList.remove('on');
   $('#infopop').classList.remove('on');
@@ -777,6 +788,11 @@ function idPhotoCurrent(){
 }
 
 // ---------- Share ----------
+function openFull(){
+  const m = curItem(); if(!m) return;
+  const native = ['.jpg','.jpeg','.png','.gif','.webp'].includes(m.ext);
+  window.open(`/api/media/${m.id}/full${native? '' : '?as=jpeg'}`, '_blank');
+}
 async function shareCurrent(){
   const m = curItem(); if(!m) return;
   toast('Preparing…');

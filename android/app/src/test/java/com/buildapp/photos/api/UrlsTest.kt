@@ -10,6 +10,9 @@ class UrlsTest {
         assertEquals("http://h:1/api/media/abc/thumb", Urls.thumb("http://h:1", "abc"))
         assertEquals("http://h:1/api/media/abc/thumb?v=0", Urls.thumb("http://h:1", "abc", 0))
         assertEquals("http://h:1/api/media/abc/thumb?v=3", Urls.thumb("http://h:1/", "abc", 3))
+        assertEquals("http://h:1/api/media/abc/thumb?v=3&w=32", Urls.thumb("http://h:1", "abc", 3, w = 32))
+        assertEquals("http://h:1/api/media/abc/thumb?w=1024", Urls.thumb("http://h:1", "abc", w = 1024))
+        assertEquals("http://h:1/api/media/abc/preview?v=2", Urls.preview("http://h:1", "abc", 2))
     }
 
     @Test

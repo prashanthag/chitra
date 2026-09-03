@@ -59,10 +59,12 @@ MEDIA_ROOT = Path(
 APP_DIR = Path(__file__).resolve().parent
 CACHE_DIR = Path(os.environ.get("CACHE_DIR", APP_DIR / "cache"))
 THUMB_DIR = CACHE_DIR / "thumbs"
+PREVIEW_DIR = CACHE_DIR / "previews"
 DB_PATH = CACHE_DIR / "index.db"
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR.mkdir(exist_ok=True)
+PREVIEW_DIR.mkdir(exist_ok=True)
 
 # CHITRA_READONLY=1 serves the library for browsing only: every mutating
 # endpoint (upload, trash, delete, edit, tagging) returns 403. Rescan stays
@@ -73,7 +75,15 @@ PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp"
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".3gp"}
 ALL_EXTS = PHOTO_EXTS | VIDEO_EXTS
 
-THUMB_SIZE = 480  # px max edge
+THUMB_SIZE = 480  # px max edge of the default grid thumbnail
+# Every size a client may ask for with ?w=. 32 is the ~1 KB placeholder tier
+# shown while a tile's real thumb is still on its way; 160 covers small
+# cards; 1024 is for large desktop tiles on high-DPI screens. Requests snap
+# up to the next size, so only these files ever exist in the cache.
+THUMB_SIZES = (32, 160, THUMB_SIZE, 1024)
+# Viewer-sized JPEG: fits any screen, so the viewer never has to download
+# and decode a 12 MP original (or transcode a HEIC) just to look at it.
+PREVIEW_SIZE = 2048
 
 
 # ---------- DB ----------
@@ -599,13 +609,7 @@ def auto_purge_trash(age_days: int = 60) -> None:
                 p.unlink()
         except Exception as e:
             print(f"[purge] file delete failed {r['path']}: {e}")
-        # Thumb
-        t = THUMB_DIR / f"{r['id']}.jpg"
-        if t.exists():
-            try:
-                t.unlink()
-            except Exception:
-                pass
+        invalidate_thumbs(r["id"])
         conn.execute("DELETE FROM album_media WHERE media_id = ?", (r["id"],))
         conn.execute("DELETE FROM media WHERE id = ?", (r["id"],))
     conn.commit()
@@ -628,18 +632,48 @@ def start_purge_loop(interval_hours: int = 24) -> None:
 # ---------- Thumbnails ----------
 
 
-def thumb_path_for(mid: str) -> Path:
-    return THUMB_DIR / f"{mid}.jpg"
+def thumb_path_for(mid: str, size: int = THUMB_SIZE) -> Path:
+    # The default size keeps its historical name so existing caches stay valid.
+    return THUMB_DIR / (f"{mid}.jpg" if size == THUMB_SIZE else f"{mid}_{size}.jpg")
 
 
-def make_photo_thumb(src: Path, dst: Path) -> bool:
+def preview_path_for(mid: str) -> Path:
+    return PREVIEW_DIR / f"{mid}.jpg"
+
+
+def snap_thumb_size(w) -> int:
+    """The smallest allowed size that is at least w (largest if w is bigger)."""
+    try:
+        w = int(w)
+    except (TypeError, ValueError):
+        return THUMB_SIZE
+    for s in THUMB_SIZES:
+        if s >= w:
+            return s
+    return THUMB_SIZES[-1]
+
+
+def invalidate_thumbs(mid: str) -> None:
+    """Drop every cached rendition of an item (all sizes and the preview);
+    called after the file changed or was removed."""
+    for p in list(THUMB_DIR.glob(f"{mid}.jpg")) + list(THUMB_DIR.glob(f"{mid}_*.jpg")) \
+            + [preview_path_for(mid)]:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"[thumb] could not remove {p}: {e}")
+
+
+def make_photo_thumb(src: Path, dst: Path, size: int = THUMB_SIZE, quality: int = 82) -> bool:
     try:
         with Image.open(src) as im:
             im = ImageOps.exif_transpose(im)
-            im.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+            im.thumbnail((size, size), Image.LANCZOS)
             if im.mode not in ("RGB", "L"):
                 im = im.convert("RGB")
-            im.save(dst, "JPEG", quality=82, optimize=True)
+            im.save(dst, "JPEG", quality=quality, optimize=True)
         return True
     except Exception as e:
         print(f"[thumb] photo failed {src}: {e}")
@@ -649,7 +683,8 @@ def make_photo_thumb(src: Path, dst: Path) -> bool:
 VIDEO_BACKEND = gpu.detect_backend()
 
 
-def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, backend: str) -> list[str]:
+def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, backend: str,
+                      size: int = THUMB_SIZE) -> list[str]:
     """Build ffmpeg cmd to grab one frame as a JPEG, hardware-decoding when the
     backend supports it (the frame is downloaded to CPU before JPEG encode)."""
     return [
@@ -657,7 +692,7 @@ def _ffmpeg_thumb_cmd(src: Path, dst: Path, seek: str, backend: str) -> list[str
         *gpu.thumb_decode_args(backend),
         "-ss", seek, "-i", str(src),
         "-frames:v", "1",
-        "-vf", gpu.thumb_scale_vf(backend, THUMB_SIZE),
+        "-vf", gpu.thumb_scale_vf(backend, size),
         "-y", str(dst),
     ]
 
@@ -674,7 +709,7 @@ def _thumb_brightness(p: Path) -> float:
         return 255.0
 
 
-def make_video_thumb(src: Path, dst: Path) -> bool:
+def make_video_thumb(src: Path, dst: Path, size: int = THUMB_SIZE) -> bool:
     """Extract a frame, seeking deeper if the early frames are black (common
     at the start of clips). Tries the GPU backend, falls back to CPU."""
     backends = [VIDEO_BACKEND] + ([gpu.CPU] if VIDEO_BACKEND != gpu.CPU else [])
@@ -682,7 +717,7 @@ def make_video_thumb(src: Path, dst: Path) -> bool:
     for seek in ("1", "5", "15", "0"):
         for backend in backends:
             try:
-                cmd = _ffmpeg_thumb_cmd(src, dst, seek, backend)
+                cmd = _ffmpeg_thumb_cmd(src, dst, seek, backend, size)
                 r = subprocess.run(cmd, capture_output=True, timeout=12)
                 if r.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
                     got = True
@@ -717,7 +752,8 @@ def _is_placeholder_file(p: Path) -> bool:
         return False
 
 
-def ensure_thumb(row: sqlite3.Row) -> Path | None:
+def _ensure_base_thumb(row: sqlite3.Row) -> Path | None:
+    """The default-size thumbnail (the one the warmer pre-generates)."""
     p = thumb_path_for(row["id"])
     if p.exists() and p.stat().st_size > 0:
         # A cached placeholder means an earlier attempt failed. Keep the
@@ -740,6 +776,46 @@ def ensure_thumb(row: sqlite3.Row) -> Path | None:
         except Exception:
             pass
     return p if ok else None
+
+
+def ensure_thumb(row: sqlite3.Row, size: int = THUMB_SIZE) -> Path | None:
+    """Thumbnail at one of THUMB_SIZES. Sizes below the default are cut from
+    the default thumb (cheap, no source decode); 1024 comes from the source."""
+    if size == THUMB_SIZE:
+        return _ensure_base_thumb(row)
+    p = thumb_path_for(row["id"], size)
+    if p.exists() and p.stat().st_size > 0:
+        return p
+    if size < THUMB_SIZE:
+        base = _ensure_base_thumb(row)
+        if base is None:
+            return None
+        # The 32px tier is a colour-and-shape hint, not a picture: quality 40
+        # keeps it around 1 KB so a page of them costs less than one thumb.
+        ok = make_photo_thumb(base, p, size, quality=40 if size <= 32 else 78)
+    else:
+        src = Path(row["path"])
+        if not src.exists():
+            return None
+        if row["kind"] == "photo":
+            ok = make_photo_thumb(src, p, size)
+        else:
+            ok = make_video_thumb(src, p, size)
+    return p if ok else None
+
+
+def ensure_preview(row: sqlite3.Row) -> Path | None:
+    """Viewer-sized JPEG of a photo (max edge PREVIEW_SIZE, EXIF-rotated,
+    HEIC/TIFF flattened). Videos use their largest frame thumbnail."""
+    if row["kind"] != "photo":
+        return ensure_thumb(row, THUMB_SIZES[-1])
+    p = preview_path_for(row["id"])
+    if p.exists() and p.stat().st_size > 0:
+        return p
+    src = Path(row["path"])
+    if not src.exists():
+        return None
+    return p if make_photo_thumb(src, p, PREVIEW_SIZE, quality=86) else None
 
 
 # ---------- Range responses (video) ----------
@@ -1215,12 +1291,7 @@ def batch_delete():
         except Exception as e:
             print(f"[delete] file delete failed {r['path']}: {e}")
             continue
-        t = THUMB_DIR / f"{r['id']}.jpg"
-        if t.exists():
-            try:
-                t.unlink()
-            except Exception:
-                pass
+        invalidate_thumbs(r["id"])
         db().execute("DELETE FROM album_media WHERE media_id = ?", (r["id"],))
         db().execute("DELETE FROM media WHERE id = ?", (r["id"],))
         deleted += 1
@@ -1611,10 +1682,7 @@ def edit_media(mid: str):
                 save_kwargs["subsampling"] = 0
             im.save(src, **save_kwargs)
             new_w, new_h = im.size
-        # Invalidate cached thumb
-        t = thumb_path_for(mid)
-        if t.exists():
-            t.unlink()
+        invalidate_thumbs(mid)
         # Bump edit_version so clients can bust their cached image
         db().execute(
             "UPDATE media SET width = ?, height = ?, mtime = ?, edit_version = edit_version + 1 WHERE id = ?",
@@ -1655,10 +1723,7 @@ def rotate_media(mid: str):
                 save_kwargs["subsampling"] = 0
             rotated.save(src, **save_kwargs)
             new_w, new_h = rotated.size
-        # Invalidate cached thumbnail
-        t = thumb_path_for(mid)
-        if t.exists():
-            t.unlink()
+        invalidate_thumbs(mid)
         # Bump edit_version exactly like edit_media: clients key the immutably
         # cached thumb URL on it, so without the bump every grid would keep
         # showing the pre-rotation tile until the browser cache expired.
@@ -2066,7 +2131,10 @@ def media_thumb(mid: str):
     ).fetchone()
     if not r:
         abort(404)
-    p = ensure_thumb(r)
+    return _send_rendition(ensure_thumb(r, snap_thumb_size(request.args.get("w"))))
+
+
+def _send_rendition(p: Path | None):
     if not p:
         # Unreadable/corrupt source — serve a neutral placeholder so the grid
         # shows a tile instead of a broken image + noisy 500.
@@ -2079,6 +2147,18 @@ def media_thumb(mid: str):
     if request.args.get("v"):
         resp.headers["Cache-Control"] += ", immutable"
     return resp
+
+
+@app.get("/api/media/<mid>/preview")
+def media_preview(mid: str):
+    """Viewer-sized JPEG (max edge 2048), cached like a thumbnail: the same
+    ?v=edit_version immutable scheme, invalidated by edit/rotate."""
+    r = db().execute(
+        "SELECT id, path, kind FROM media WHERE id = ?", (mid,)
+    ).fetchone()
+    if not r:
+        abort(404)
+    return _send_rendition(ensure_preview(r))
 
 
 @app.get("/api/media/<mid>/stream.mp4")

@@ -89,7 +89,7 @@ fun ViewerDialog(
                     } else {
                         Box(Modifier.fillMaxSize().background(Color.Black)) {
                             AsyncImage(
-                                model = Urls.thumb(serverUrl, m.id, m.editVersion),
+                                model = Urls.thumb(serverUrl, m.id, m.editVersion, w = 1024),
                                 contentDescription = m.name,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize(),
@@ -97,9 +97,11 @@ fun ViewerDialog(
                         }
                     }
                 } else {
-                    // Server-side JPEG conversion flattens HEIC/TIFF/MPO.
+                    // The cached 2048px preview: EXIF-rotated, HEIC/TIFF
+                    // flattened, immutable-cached. The original (full?as=jpeg)
+                    // was re-encoded by the server on every swipe.
                     AsyncImage(
-                        model = Urls.full(serverUrl, m.id, asJpeg = true),
+                        model = Urls.preview(serverUrl, m.id, m.editVersion),
                         contentDescription = m.name,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),

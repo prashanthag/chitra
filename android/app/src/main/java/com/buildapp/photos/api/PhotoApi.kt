@@ -152,8 +152,15 @@ object Urls {
      * (edit_version); a caller that has no version gets the short-lived
      * unversioned URL instead of pinning "?v=0" forever.
      */
-    fun thumb(baseUrl: String, id: String, version: Int? = null): String =
-        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb" +
+    fun thumb(baseUrl: String, id: String, version: Int? = null, w: Int? = null): String {
+        val q = listOfNotNull(version?.let { "v=$it" }, w?.let { "w=$it" })
+        return (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb" +
+            (if (q.isEmpty()) "" else "?" + q.joinToString("&"))
+    }
+
+    /** Viewer-sized (2048px) JPEG of a photo, cached and versioned like a thumb. */
+    fun preview(baseUrl: String, id: String, version: Int? = null): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/preview" +
             (if (version != null) "?v=$version" else "")
 
     fun full(baseUrl: String, id: String, asJpeg: Boolean = false): String {
