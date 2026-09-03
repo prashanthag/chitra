@@ -2315,7 +2315,8 @@ def list_clusters():
                       f.media_id AS rep_media_id
                FROM clusters c
                LEFT JOIN faces f ON f.id = c.rep_face_id
-               ORDER BY c.count DESC"""
+               ORDER BY (c.name IS NULL OR TRIM(c.name) = ''),
+                        LOWER(c.name), c.count DESC"""
         ).fetchall()
     except sqlite3.OperationalError:
         # Face indexer hasn't run yet, so faces/clusters tables don't exist.

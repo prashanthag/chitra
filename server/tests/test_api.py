@@ -155,6 +155,21 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class PeopleOrderTests(unittest.TestCase):
+    def test_named_groups_first_alphabetically_then_unnamed_by_size(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.executemany("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (?,?,?)", [
+            (1, None, 50), (2, "Zara", 3), (3, "", 40), (4, "anita", 9), (5, "Bala", 20), (6, None, 60),
+        ])
+        conn.commit()
+        conn.close()
+        self.addCleanup(_drop_clusters_table)
+        ids = [c["id"] for c in client.get("/api/clusters").get_json()]
+        self.assertEqual(ids, [4, 5, 2, 6, 1, 3])
+
+
 class ContentHashTests(unittest.TestCase):
     """De-duplication by content, not by file name."""
 
