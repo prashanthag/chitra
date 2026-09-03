@@ -32,7 +32,7 @@ object Uploader {
     )
 
     @Serializable
-    private data class CheckFile(val name: String, val size: Long)
+    data class CheckFile(val name: String, val size: Long, val hash: String? = null)
 
     @Serializable
     private data class CheckRequest(val files: List<CheckFile>)
@@ -63,10 +63,14 @@ object Uploader {
 
     fun base(serverUrl: String) = if (serverUrl.endsWith("/")) serverUrl else "$serverUrl/"
 
-    /** Which of these (name, size) pairs does the server already have? */
-    fun check(serverUrl: String, files: List<Pair<String, Long>>): Result<List<Boolean>> = runCatching {
+    /**
+     * Which of these files does the server already have? With a content
+     * hash the match is by bytes regardless of name; without one the server
+     * falls back to name + size.
+     */
+    fun check(serverUrl: String, files: List<CheckFile>): Result<List<Boolean>> = runCatching {
         if (files.isEmpty()) return@runCatching emptyList()
-        val body = json.encodeToString(CheckRequest.serializer(), CheckRequest(files.map { CheckFile(it.first, it.second) }))
+        val body = json.encodeToString(CheckRequest.serializer(), CheckRequest(files))
             .toRequestBody("application/json".toMediaType())
         val req = Request.Builder().url(base(serverUrl) + "api/upload/check").post(body).build()
         client.newCall(req).execute().use { resp ->

@@ -316,6 +316,28 @@ def main():
         extra = sorted(on_disk - want - set(SHOTS))
         step("no duplicate files on disk", not extra, f"{len(on_disk)} files" + (f", extra: {extra}" if extra else ""))
 
+        # 4b) A renamed copy of a photo already on the server must be skipped
+        #     by content hash: no upload POST, server count unchanged, but the
+        #     phone records it as done (ledgered as a duplicate).
+        copy_name = "e2e_cam_copy.jpg"
+        adb("push", str(fixtures / CAMERA[0]), f"/sdcard/DCIM/Camera/{copy_name}")
+        adb("shell", "content", "call", "--uri", "content://media", "--method", "scan_file",
+            "--arg", f"/storage/emulated/0/DCIM/Camera/{copy_name}", check=False)
+        wait_for(lambda: copy_name in adb("shell", "content", "query", "--uri", "content://media/external/file",
+                                          "--projection", "_display_name", "--where",
+                                          f"\"_display_name='{copy_name}'\"", check=False), 30, every=2,
+                 what="renamed copy in MediaStore")
+        posts_before = server_log_count(r"POST /api/upload ")
+        checks_before = server_log_count(r"POST /api/upload/check")
+        n_before = len(uploads())
+        launch(backup_now=True)
+        wait_for(lambda: server_log_count(r"POST /api/upload/check") > checks_before, 60, every=2,
+                 what="upload/check for the renamed copy")
+        time.sleep(6)
+        step("renamed copy skipped by content hash",
+             server_log_count(r"POST /api/upload ") == posts_before and len(uploads()) == n_before,
+             f"{len(uploads())} on server, upload POSTs unchanged")
+
         # 5) Settings screen renders (best effort UI navigation)
         launch(filter="all")
         time.sleep(3)

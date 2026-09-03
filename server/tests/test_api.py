@@ -155,6 +155,96 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class ContentHashTests(unittest.TestCase):
+    """De-duplication by content, not by file name."""
+
+    def _jpeg(self, color, size=(32, 32)):
+        buf = io.BytesIO()
+        Image.new("RGB", size, color).save(buf, "JPEG")
+        buf.seek(0)
+        return buf
+
+    def _upload(self, buf, name):
+        r = client.post("/api/upload", data={"file": (buf, name)}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        if not item.get("duplicate"):
+            self._uploaded.append(item["id"])
+        return item
+
+    def setUp(self):
+        self._uploaded = []
+
+    def tearDown(self):
+        # Leave the uploads album as the fixture library expects it.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._uploaded:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.close()
+        if self._uploaded:
+            chitra.scan_once()
+
+    def test_quick_hash_vectors_match_the_android_implementation(self):
+        # Same vectors as ContentHashTest.kt: the two sides must agree bit for bit.
+        big = bytes(i % 251 for i in range(3_000_000))
+        self.assertEqual(chitra.quick_hash(io.BytesIO(big), len(big)),
+                         "c5bb7ac7f6125f79b92cd6d497d6c07220cfe58ae3931698eedb5b2109abf83a")
+        self.assertEqual(chitra.quick_hash(io.BytesIO(b"hello chitra"), 12),
+                         "a5c35e5d848a9c891a479ebaeb7083b71e8bee487416b56f2333dca466e9f7e6")
+
+    def test_renamed_copy_is_a_duplicate_and_same_name_different_bytes_is_not(self):
+        first = self._upload(self._jpeg((1, 2, 3)), "hash_a.jpg")
+        self.assertFalse(first.get("duplicate"))
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        h = conn.execute("SELECT content_hash FROM media WHERE id=?", (first["id"],)).fetchone()[0]
+        conn.close()
+        self.assertRegex(h, r"^[0-9a-f]{64}$")
+
+        # Same bytes under another name: the old name+size rule would have
+        # stored a second copy.
+        again = self._upload(self._jpeg((1, 2, 3)), "renamed_copy.jpg")
+        self.assertTrue(again["duplicate"])
+        self.assertEqual(again["id"], first["id"])
+
+        # Same name and byte size, different content: a real second file.
+        other = self._jpeg((3, 2, 1))
+        self.assertEqual(len(other.getvalue()), len(self._jpeg((1, 2, 3)).getvalue()))
+        third = self._upload(other, "hash_a.jpg")
+        self.assertFalse(third.get("duplicate"))
+        self.assertNotEqual(third["id"], first["id"])
+        self.assertTrue(third["name"].startswith("hash_a_"))
+
+    def test_upload_check_matches_by_hash_regardless_of_name(self):
+        item = self._upload(self._jpeg((9, 9, 9)), "hash_b.jpg")
+        data = self._jpeg((9, 9, 9)).getvalue()
+        h = chitra.quick_hash(io.BytesIO(data), len(data))
+        r = client.post("/api/upload/check", json={"files": [
+            {"name": "anything.jpg", "size": len(data), "hash": h},
+            {"name": "hash_b.jpg", "size": len(data)},                    # legacy name+size
+            {"name": "hash_b.jpg", "size": len(data), "hash": "0" * 64},  # same name, other bytes
+        ]}).get_json()
+        self.assertEqual(r["exists"], [True, True, False])
+        self.assertEqual(r["ids"][0], item["id"])
+
+    def test_scan_hashes_new_files(self):
+        path = os.path.join(MEDIA, "CameraX", "hashed.jpg")
+        self._jpeg((7, 7, 7)).seek(0)
+        with open(path, "wb") as f:
+            f.write(self._jpeg((7, 7, 7)).getvalue())
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        h = conn.execute("SELECT content_hash FROM media WHERE name='hashed.jpg'").fetchone()[0]
+        conn.close()
+        self.assertEqual(h, chitra.quick_hash_file(chitra.Path(path)))
+
+
 class RenditionTests(unittest.TestCase):
     """?w= thumbnail sizes, the tiny placeholder tier, and the viewer preview."""
 

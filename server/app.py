@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import struct
 import io
 from html import escape
 import json
@@ -182,6 +183,10 @@ def init_db() -> None:
     # When the row first entered the index (upload or scan). Drives the
     # "Recently uploaded" view; taken_at says when it was shot, not added.
     _add_column_if_missing(conn, "media", "added_at REAL")
+    # Quick content hash (see quick_hash): exact-copy detection that does not
+    # depend on the file name. NULL until the backfill thread gets to a row.
+    _add_column_if_missing(conn, "media", "content_hash TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_hash ON media(content_hash)")
     conn.execute("UPDATE media SET added_at = mtime WHERE added_at IS NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_latlng ON media(lat, lng)")
@@ -260,6 +265,38 @@ def _clean_exif_str(v) -> str | None:
         v = v.decode("utf-8", "ignore")
     v = str(v).replace("\x00", "").strip()
     return v or None
+
+
+# Content hash used for de-duplication on upload and scan. Not a full-file
+# digest: SHA-256 of the byte size, the first 1 MiB and the last 64 KiB.
+# That is enough to tell exact copies from everything else (two different
+# photos never share size plus their first megabyte), costs one small read
+# per file on a phone, and the Android client computes the identical value
+# (data/ContentHash.kt) so the pre-flight check can match by content.
+HASH_HEAD = 1 << 20
+HASH_TAIL = 64 << 10
+
+
+def quick_hash(f, size: int) -> str:
+    """f is a seekable binary stream; its position is restored afterwards."""
+    pos = f.tell()
+    h = hashlib.sha256()
+    h.update(struct.pack(">Q", size))
+    f.seek(0)
+    h.update(f.read(HASH_HEAD))
+    if size > HASH_HEAD:
+        f.seek(max(HASH_HEAD, size - HASH_TAIL))
+        h.update(f.read(HASH_TAIL))
+    f.seek(pos)
+    return h.hexdigest()
+
+
+def quick_hash_file(path: Path) -> str | None:
+    try:
+        with path.open("rb") as f:
+            return quick_hash(f, path.stat().st_size)
+    except OSError:
+        return None
 
 
 def extract_exif(path: Path, kind: str) -> dict:
@@ -481,8 +518,8 @@ def scan_once() -> None:
         cur.executemany(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng,
-                camera_make, camera_model, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                camera_make, camera_model, content_hash, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                        COALESCE((SELECT added_at FROM media WHERE id = ?), ?))""",
             batch,
         )
@@ -545,6 +582,7 @@ def scan_once() -> None:
                     lng,
                     cam_make,
                     cam_model,
+                    quick_hash_file(full),
                     mid,
                     time.time(),
                 )
@@ -1330,7 +1368,11 @@ def upload_media():
         # second device with the same camera roll). Skip it instead of
         # minting IMG_0001_1.jpg copies.
         size_hint = _stream_size(f.stream)
-        dup = _find_duplicate(safe_name, size_hint)
+        try:
+            chash = quick_hash(f.stream, size_hint) if size_hint is not None else None
+        except Exception:
+            chash = None
+        dup = _find_duplicate(safe_name, size_hint, chash)
         if dup is not None:
             saved.append({"id": dup, "name": safe_name, "indexed": True,
                           "duplicate": True})
@@ -1366,12 +1408,13 @@ def upload_media():
         db().execute(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album,
-                lat, lng, camera_make, camera_model, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                lat, lng, camera_make, camera_model, content_hash, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 mid, str(dest), safe_name, kind, ext, mime,
                 st.st_size, st.st_mtime, taken, width, height, album,
                 exif.get("lat"), exif.get("lng"), exif.get("make"), exif.get("model"),
+                chash or quick_hash_file(dest),
                 time.time(),
             ),
         )
@@ -1394,21 +1437,38 @@ def _stream_size(stream) -> int | None:
         return None
 
 
-def _find_duplicate(name: str, size: int | None) -> str | None:
+def _find_duplicate(name: str, size: int | None, content_hash: str | None = None) -> str | None:
+    """An existing item that is the same file. By content hash when we have
+    one (any name, any folder); by name + size otherwise, which is also the
+    fallback for rows the hash backfill has not reached yet. A name + size
+    match whose stored hash differs from the incoming one is a different
+    file that merely shares a name, and is not a duplicate."""
+    if content_hash:
+        r = db().execute(
+            "SELECT id FROM media WHERE content_hash = ? AND trashed_at IS NULL LIMIT 1",
+            (content_hash,)).fetchone()
+        if r:
+            return r["id"]
     if size is None:
         return None
     r = db().execute(
-        "SELECT id FROM media WHERE name = ? AND size = ? AND trashed_at IS NULL "
+        "SELECT id, content_hash FROM media WHERE name = ? AND size = ? AND trashed_at IS NULL "
         "LIMIT 1", (name, size),
     ).fetchone()
-    return r["id"] if r else None
+    if not r:
+        return None
+    if content_hash and r["content_hash"] and r["content_hash"] != content_hash:
+        return None
+    return r["id"]
 
 
 @app.post("/api/upload/check")
 def upload_check():
-    """Pre-flight for backup clients: which of these (name, size) pairs are
-    already in the library? Lets a phone skip files it has sent before
-    without moving a byte, so a reinstall doesn't re-send the camera roll."""
+    """Pre-flight for backup clients: which of these files are already in
+    the library? Each entry is {name, size, hash?}; with a hash (quick_hash,
+    computed on the phone) the match is by content regardless of name, else
+    by name + size. Lets a phone skip files it has sent before without
+    moving a byte, so a reinstall doesn't re-send the camera roll."""
     body = request.get_json(silent=True) or {}
     files = body.get("files") or []
     if not isinstance(files, list) or len(files) > 500:
@@ -1416,7 +1476,9 @@ def upload_check():
     out = []
     for f in files:
         try:
-            dup = _find_duplicate(Path(str(f.get("name", ""))).name, int(f.get("size")))
+            h = f.get("hash")
+            h = str(h) if h else None
+            dup = _find_duplicate(Path(str(f.get("name", ""))).name, int(f.get("size")), h)
         except (TypeError, ValueError, AttributeError):
             dup = None
         out.append(dup)
@@ -2459,6 +2521,37 @@ def start_thumb_warmer() -> None:
     threading.Thread(target=loop, daemon=True, name="thumbwarm").start()
 
 
+def start_hash_backfill() -> None:
+    """Fill media.content_hash for rows indexed before hashing existed, in
+    the background after the startup scan: one small read per file, so a
+    42k-item library takes minutes, not hours."""
+    def loop():
+        while _scan_state.get("running"):
+            time.sleep(5)
+        _lower_priority()
+        conn = sqlite3.connect(DB_PATH)
+        done = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, path FROM media WHERE content_hash IS NULL LIMIT 200").fetchall()
+            if not rows:
+                break
+            updates = []
+            for mid, path in rows:
+                h = quick_hash_file(Path(path))
+                # A missing file gets a sentinel so the loop cannot spin on it.
+                updates.append((h or "-", mid))
+            conn.executemany("UPDATE media SET content_hash = ? WHERE id = ?", updates)
+            conn.commit()
+            done += len(rows)
+            if done % 2000 == 0:
+                print(f"[hash] {done} rows hashed")
+        conn.close()
+        if done:
+            print(f"[hash] backfill done, {done} rows")
+    threading.Thread(target=loop, daemon=True, name="hashfill").start()
+
+
 def start_clip_warmer() -> None:
     """Load the CLIP model + embedding matrix in the background after the
     startup scan, so the first /api/memories (which the phone app calls on
@@ -2508,6 +2601,7 @@ def main() -> None:
     start_purge_loop()
     if os.environ.get("THUMB_WARM", "0").lower() in ("1", "true", "yes"):
         start_thumb_warmer()
+    start_hash_backfill()
     if os.environ.get("CLIP_WARM", "1").lower() in ("1", "true", "yes"):
         start_clip_warmer()
     host = os.environ.get("HOST", "0.0.0.0")

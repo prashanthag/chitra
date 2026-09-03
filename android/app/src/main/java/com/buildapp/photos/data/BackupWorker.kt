@@ -78,7 +78,13 @@ class BackupWorker(
         val remaining = ArrayList<DeviceItem>(plan.size)
         for (chunk in plan.chunked(200)) {
             if (isStopped) break
-            val exists = Uploader.check(serverUrl, chunk.map { it.name to it.size }).getOrNull()
+            // One small read per file (first 1 MiB + last 64 KiB) so the
+            // server can match by content: a renamed copy or a photo that
+            // reached the library another way is skipped, and a new file that
+            // happens to share a name and size is not.
+            val exists = Uploader.check(serverUrl, chunk.map {
+                Uploader.CheckFile(it.name, it.size, ContentHash.of(ctx, Uri.parse(it.uri), it.size))
+            }).getOrNull()
             if (exists == null || exists.size != chunk.size) {
                 remaining += chunk
                 continue
