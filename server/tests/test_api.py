@@ -88,6 +88,38 @@ def _drop_clip_embedding():
     conn.close()
 
 
+class InfoPanelTests(unittest.TestCase):
+    def test_detail_carries_exposure_settings_from_exif(self):
+        path = os.path.join(MEDIA, "CameraX", "exposed.jpg")
+        exif = Image.Exif()
+        exif[271] = "Nikon"
+        sub = exif.get_ifd(0x8769)
+        sub[33437] = 1.8          # FNumber
+        sub[33434] = 1 / 125      # ExposureTime
+        sub[34855] = 200          # ISO
+        sub[37386] = 26.0         # FocalLength
+        sub[41989] = 39           # FocalLengthIn35mmFilm
+        sub[42036] = "Nikkor 26mm"
+        sub[37380] = 0.3          # ExposureBiasValue
+        sub[37385] = 16           # Flash: did not fire
+        Image.new("RGB", (64, 64), (9, 9, 9)).save(path, "JPEG", exif=exif.tobytes())
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+
+        d = client.get(f"/api/media/{id_of('exposed.jpg')}").get_json()
+        self.assertEqual(d["exposure"], {
+            "iso": "ISO 200", "aperture": "f/1.8", "shutter": "1/125 s",
+            "focal_length": "26 mm (39 mm equiv.)", "lens": "Nikkor 26mm",
+            "exposure_bias": "+0.3 EV", "flash": "Did not fire",
+        })
+        # A photo without exposure tags gets an empty block, not an error.
+        self.assertEqual(client.get(f"/api/media/{id_of('one.jpg')}").get_json()["exposure"], {})
+
+
 class EditVersionTests(unittest.TestCase):
     """Thumb URLs are ?v=<edit_version> and immutable, so every mutation must
     bump the version and every list that feeds a grid must carry it."""

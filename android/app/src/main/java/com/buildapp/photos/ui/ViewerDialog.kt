@@ -206,6 +206,19 @@ fun ViewerDialog(
                         } ?: add("Taken" to "Date unknown")
                         val cam = listOfNotNull(detail.cameraMake, detail.cameraModel).joinToString(" ")
                         if (cam.isNotBlank()) add("Camera" to cam)
+                        val ex = detail.exposure.orEmpty()
+                        ex["lens"]?.let { add("Lens" to it) }
+                        ex["aperture"]?.let { add("Aperture" to it) }
+                        ex["shutter"]?.let { add("Shutter" to it) }
+                        ex["iso"]?.let { add("ISO" to it) }
+                        ex["focal_length"]?.let { add("Focal length" to it) }
+                        ex["exposure_bias"]?.let { add("Exposure bias" to it) }
+                        ex["flash"]?.let { add("Flash" to it) }
+                        val vi = detail.video.orEmpty()
+                        vi["duration"]?.let { add("Duration" to it) }
+                        vi["codec"]?.let { add("Codec" to it) }
+                        vi["frame_rate"]?.let { add("Frame rate" to it) }
+                        vi["bitrate"]?.let { add("Bitrate" to it) }
                         if (detail.width != null && detail.height != null) add("Resolution" to "${detail.width} × ${detail.height}")
                         detail.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
                         add("Type" to "${detail.kind} · ${detail.ext.removePrefix(".").uppercase()}")

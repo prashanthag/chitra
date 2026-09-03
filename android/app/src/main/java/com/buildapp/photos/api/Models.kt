@@ -27,6 +27,10 @@ data class MediaItem(
     @SerialName("edit_version") val editVersion: Int = 0,
     /** When the item entered the library (upload time), epoch seconds. */
     @SerialName("added_at") val addedAt: Double? = null,
+    /** Detail endpoint only: preformatted exposure settings (iso, aperture, shutter, focal_length, lens, exposure_bias, flash). */
+    val exposure: Map<String, String>? = null,
+    /** Detail endpoint only, videos: duration, codec, frame_rate, bitrate. */
+    val video: Map<String, String>? = null,
 )
 
 @Serializable

@@ -278,6 +278,104 @@ def extract_exif(path: Path, kind: str) -> dict:
     return out
 
 
+def _fmt_shutter(t: float) -> str:
+    if t <= 0:
+        return ""
+    if t < 1:
+        return f"1/{round(1 / t)} s"
+    return f"{t:g} s"
+
+
+def _exposure_info(path: Path) -> dict:
+    """ISO, aperture, shutter, focal length, lens, bias and flash from the
+    Exif sub-IFD, read on demand for the info panel (a header read, not
+    indexed: it is one file open per panel, and works for every existing row
+    without a rescan). Values are display strings; missing tags are absent."""
+    out: dict = {}
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+            try:
+                sub = exif.get_ifd(34665)
+            except Exception:
+                sub = {}
+    except Exception:
+        return out
+
+    def num(tag):
+        v = sub.get(tag)
+        if isinstance(v, (tuple, list)):
+            v = v[0] if v else None
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    iso = num(34855)
+    if iso:
+        out["iso"] = f"ISO {int(iso)}"
+    f = num(33437)
+    if f:
+        out["aperture"] = f"f/{f:g}"
+    t = num(33434)
+    if t:
+        out["shutter"] = _fmt_shutter(t)
+    fl = num(37386)
+    if fl:
+        fl35 = num(41989)
+        out["focal_length"] = f"{fl:g} mm" + (
+            f" ({int(fl35)} mm equiv.)" if fl35 and abs(fl35 - fl) >= 1 else "")
+    lens = _clean_exif_str(sub.get(42036))
+    if lens:
+        out["lens"] = lens
+    bias = num(37380)
+    if bias:
+        out["exposure_bias"] = f"{bias:+g} EV"
+    flash = num(37385)
+    if flash is not None:
+        out["flash"] = "Fired" if int(flash) & 1 else "Did not fire"
+    return out
+
+
+def _video_info(path: Path) -> dict:
+    """Duration, codec/resolution and frame rate for the info panel (ffprobe)."""
+    out: dict = {}
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, timeout=15)
+        j = json.loads(r.stdout or "{}")
+    except Exception:
+        return out
+    try:
+        dur = float(j.get("format", {}).get("duration") or 0)
+        if dur > 0:
+            m, s = divmod(int(round(dur)), 60)
+            h, m = divmod(m, 60)
+            out["duration"] = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        br = float(j.get("format", {}).get("bit_rate") or 0)
+        if br > 0:
+            out["bitrate"] = f"{br / 1e6:.1f} Mbit/s"
+    except (TypeError, ValueError):
+        pass
+    for s in j.get("streams", []):
+        if s.get("codec_type") == "video":
+            codec = s.get("codec_name", "")
+            w, h = s.get("width"), s.get("height")
+            if codec:
+                out["codec"] = codec.upper() + (f" · {w} × {h}" if w and h else "")
+            fps = s.get("avg_frame_rate") or s.get("r_frame_rate") or ""
+            try:
+                n, d = fps.split("/")
+                if float(d) > 0:
+                    out["frame_rate"] = f"{float(n) / float(d):.4g} fps"
+            except (ValueError, AttributeError):
+                pass
+            break
+    return out
+
+
 def _video_meta(path: Path) -> dict:
     """Date / camera / GPS from a video container (ffprobe)."""
     out: dict = {}
@@ -1658,6 +1756,14 @@ def media_meta(mid: str):
     d.pop("clip_embedding", None)
     if d.get("lat") is not None and d.get("lng") is not None:
         d["place"] = _place_for(d["lat"], d["lng"])
+    # Exposure settings (photos) / container facts (videos) are read from the
+    # file on demand rather than indexed: cheap, and no rescan for old rows.
+    p = Path(d.get("path") or "")
+    if p.is_file():
+        if d.get("kind") == "photo":
+            d["exposure"] = _exposure_info(p)
+        elif d.get("kind") == "video":
+            d["video"] = _video_info(p)
     return jsonify(d)
 
 
