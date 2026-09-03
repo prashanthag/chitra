@@ -83,6 +83,21 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    /**
+     * Read-modify-write of the folder set inside one DataStore transaction, so
+     * two quick toggles cannot both read the old set and overwrite each other.
+     * [transform] receives null while no set has been chosen yet.
+     */
+    suspend fun updateBackupBuckets(transform: (Set<Long>?) -> Set<Long>) {
+        context.settingsDataStore.edit {
+            val cur = if (it[SettingsKeys.BACKUP_BUCKETS_SET] == true)
+                (it[SettingsKeys.BACKUP_BUCKETS] ?: emptySet()).mapNotNull { s -> s.toLongOrNull() }.toSet()
+            else null
+            it[SettingsKeys.BACKUP_BUCKETS] = transform(cur).map { id -> id.toString() }.toSet()
+            it[SettingsKeys.BACKUP_BUCKETS_SET] = true
+        }
+    }
+
     suspend fun setBackupVideos(on: Boolean) {
         context.settingsDataStore.edit { it[SettingsKeys.BACKUP_VIDEOS] = on }
     }

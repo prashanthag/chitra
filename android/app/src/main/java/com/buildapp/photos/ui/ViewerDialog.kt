@@ -87,7 +87,7 @@ fun ViewerDialog(
                     } else {
                         Box(Modifier.fillMaxSize().background(Color.Black)) {
                             AsyncImage(
-                                model = Urls.thumb(serverUrl, m.id),
+                                model = Urls.thumb(serverUrl, m.id, m.editVersion),
                                 contentDescription = m.name,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize(),

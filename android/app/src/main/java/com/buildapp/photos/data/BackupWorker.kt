@@ -54,7 +54,7 @@ class BackupWorker(
         val cr = ctx.contentResolver
         val buckets = prefs.bucketIds ?: BackupPlanner.defaultBuckets(DeviceMedia.buckets(cr))
         val options = BackupOptions(bucketIds = buckets, includeVideos = prefs.includeVideos)
-        val ledger = UploadLedger(ctx)
+        val ledger = UploadLedger.get(ctx)
         val plan = BackupPlanner.plan(DeviceMedia.items(cr, buckets, prefs.includeVideos),
             ledger.uploadedIds(serverUrl), options)
         if (plan.isEmpty()) {

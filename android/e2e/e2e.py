@@ -86,9 +86,20 @@ def wait_for(pred, timeout, every=1.0, what="condition"):
 
 # ---------------------------------------------------------------- fixtures
 def make_fixtures(d: Path):
+    """Photo-sized fixtures. The backup planner ignores files under 10 KB
+    (launcher icons and other system images also live in MediaStore), so a
+    flat-colour JPEG (~5 KB) would never be picked up; noise makes them
+    compress like real photos (~300 KB)."""
+    import random
     from PIL import Image
+    rnd = random.Random(42)
     for i, name in enumerate(CAMERA + SHOTS):
-        im = Image.new("RGB", (640, 480), (40 * i + 20, 90, 160 - 20 * i))
+        im = Image.new("RGB", (1024, 768), (40 * i + 20, 90, 160 - 20 * i))
+        px = im.load()
+        for y in range(0, 768, 2):
+            for x in range(0, 1024, 2):
+                v = rnd.randrange(0, 90)
+                px[x, y] = (v + 40 * i, v + 60, 200 - v)
         exif = Image.Exif()
         stamp = f"2024:05:{10 + i:02d} 10:00:00"
         exif[0x0132] = stamp                     # IFD0 DateTime
@@ -96,7 +107,7 @@ def make_fixtures(d: Path):
         im.save(d / name, "JPEG", quality=85, exif=exif.tobytes())
     if shutil.which("ffmpeg"):
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-                        "testsrc=duration=1:size=320x240:rate=10", "-pix_fmt", "yuv420p",
+                        "testsrc=duration=3:size=640x480:rate=15", "-pix_fmt", "yuv420p",
                         str(d / VIDEO)], check=True)
 
 
@@ -172,7 +183,11 @@ def push_media(fixtures: Path):
 
 
 def launch(**extras):
-    args = [ADB, "shell", "am", "start", "-W", "-n", f"{PKG}/.MainActivity"]
+    # --activity-single-top: a relaunch while the activity is already on top
+    # must reach onNewIntent. Without the flag Android just brings the task to
+    # the front and drops the intent (no onCreate, no onNewIntent), so every
+    # launch after the first silently changed nothing.
+    args = [ADB, "shell", "am", "start", "-W", "--activity-single-top", "-n", f"{PKG}/.MainActivity"]
     for k, v in extras.items():
         if isinstance(v, bool):
             args += ["--ez", k, "true" if v else "false"]
@@ -272,8 +287,11 @@ def main():
         step("after ledger wipe, server check prevents re-upload",
              server_log_count(r"POST /api/upload ") == posts_before and n_after == len(want) + len(SHOTS),
              f"{n_after} items, no new upload POSTs, {server_log_count(r'POST /api/upload/check') - checks_before} check call(s)")
-        dupes_on_disk = [p.name for p in (tmp / "media" / "uploads").rglob("*_1.*")]
-        step("no _1 duplicate files on disk", not dupes_on_disk, str(dupes_on_disk))
+        # A re-sent file would land beside the original as <stem>_1.<ext>;
+        # compare whole names, since the fixtures themselves end in _1/_2.
+        on_disk = {p.name for p in (tmp / "media" / "uploads").rglob("*") if p.is_file()}
+        extra = sorted(on_disk - want - set(SHOTS))
+        step("no duplicate files on disk", not extra, f"{len(on_disk)} files" + (f", extra: {extra}" if extra else ""))
 
         # 5) Settings screen renders (best effort UI navigation)
         launch(filter="all")
@@ -292,6 +310,15 @@ def main():
         step("latency thresholds", r.returncode == 0, r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-200:])
     finally:
         (OUT / "report.json").write_text(json.dumps(results, indent=2))
+        # Always keep the device log: WorkManager and app traces explain a
+        # failed step far better than a timeout message.
+        try:
+            log = subprocess.run([ADB, "logcat", "-d", "-v", "time"], capture_output=True, text=True, timeout=60).stdout
+            keep = [l for l in log.splitlines() if re.search(r"WM-|AndroidRuntime|buildapp|chitra|Backup|Upload|OkHttp", l)]
+            (OUT / "logcat.txt").write_text("\n".join(keep))
+            (OUT / "logcat-full.txt").write_text(log)
+        except Exception as e:  # noqa: BLE001
+            (OUT / "logcat.txt").write_text(f"logcat failed: {e}")
         if not os.environ.get("KEEP"):
             if emu is not None:
                 adb("emu", "kill", check=False)

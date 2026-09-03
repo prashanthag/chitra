@@ -12,6 +12,18 @@ import android.database.sqlite.SQLiteOpenHelper
  */
 class UploadLedger(context: Context) : SQLiteOpenHelper(context.applicationContext, "backup_ledger.db", null, 1) {
 
+    companion object {
+        @Volatile private var shared: UploadLedger? = null
+
+        /**
+         * One helper per process. Each SQLiteOpenHelper keeps its own
+         * connection open until it is finalized, so constructing a fresh one
+         * per call (Settings did, on every worker completion) leaked them.
+         */
+        fun get(context: Context): UploadLedger =
+            shared ?: synchronized(this) { shared ?: UploadLedger(context.applicationContext).also { shared = it } }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE uploaded (

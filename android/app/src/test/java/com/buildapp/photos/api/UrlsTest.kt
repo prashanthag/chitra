@@ -6,7 +6,9 @@ import org.junit.Test
 class UrlsTest {
     @Test
     fun `thumb url carries the edit version and tolerates a trailing slash`() {
-        assertEquals("http://h:1/api/media/abc/thumb?v=0", Urls.thumb("http://h:1", "abc"))
+        // No version known: unversioned (server gives it a short max-age).
+        assertEquals("http://h:1/api/media/abc/thumb", Urls.thumb("http://h:1", "abc"))
+        assertEquals("http://h:1/api/media/abc/thumb?v=0", Urls.thumb("http://h:1", "abc", 0))
         assertEquals("http://h:1/api/media/abc/thumb?v=3", Urls.thumb("http://h:1/", "abc", 3))
     }
 

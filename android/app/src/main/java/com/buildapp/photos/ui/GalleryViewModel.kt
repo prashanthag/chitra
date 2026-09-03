@@ -14,7 +14,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.coroutines.withContext
 
 enum class Filter(val label: String) {
@@ -64,6 +67,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<GalleryState> = _state.asStateFlow()
     private var api: PhotoApi? = null
     private var endReached = false
+    // Bumped whenever the list is reset (refresh, filter, query, server). A
+    // page that was in flight for an older generation is dropped instead of
+    // being spliced into the new list.
+    private var gen = 0
 
     init {
         viewModelScope.launch {
@@ -80,6 +87,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
      * first page arrives (no blank flash), then get replaced.
      */
     fun refresh() {
+        gen++
         endReached = false
         _state.value = _state.value.copy(page = 0, error = null, loading = false)
         loadNext()
@@ -102,6 +110,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         val s = _state.value
         if (s.loading || endReached) return
         _state.value = s.copy(loading = true)
+        val g = gen
         viewModelScope.launch {
             try {
                 val nextPage = s.page + 1
@@ -121,33 +130,42 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 // Uploads: the phone-backup album, newest upload first.
                 val album = if (s.filter == Filter.UPLOADS) "uploads" else null
                 val sort = if (s.filter == Filter.UPLOADS) "added" else null
-                val resp = if (s.semantic && q != null) {
+                // Semantic search is library-wide and ignores every filter, so
+                // it never applies to the Uploads view (a name search does).
+                val semantic = s.semantic && q != null && s.filter != Filter.UPLOADS
+                val resp = if (semantic) {
                     // Semantic search returns top-k by CLIP similarity (single page).
-                    val r = api.searchSemantic(q = q, topK = 200)
-                    endReached = true
-                    r
+                    api.searchSemantic(q = q!!, topK = 200)
                 } else api.media(
                     page = nextPage, perPage = 80,
                     kind = kind, album = album, q = q,
                     favorites = fav, trashed = trashed, archived = archived,
                     dated = dated, undated = undated, sort = sort,
                 )
-                if (resp.items.size < resp.perPage) endReached = true
-                _state.value = _state.value.copy(
-                    items = if (nextPage == 1) resp.items else _state.value.items + resp.items,
-                    page = nextPage,
-                    total = resp.total,
-                    loading = false,
-                    error = null,
-                )
+                if (g != gen) return@launch   // list was reset while this page was in flight
+                if (semantic || resp.items.size < resp.perPage) endReached = true
+                _state.update { cur ->
+                    cur.copy(
+                        // Uploads land at the top of the feed while the user
+                        // scrolls, shifting offset pages; a repeated id would
+                        // be a duplicate LazyGrid key and crash the grid.
+                        items = if (nextPage == 1) resp.items else (cur.items + resp.items).distinctBy { it.id },
+                        page = nextPage,
+                        total = resp.total,
+                        loading = false,
+                        error = null,
+                    )
+                }
             } catch (e: Exception) {
-                _state.value = _state.value.copy(loading = false, error = e.message ?: "error")
+                if (g != gen) return@launch
+                _state.update { it.copy(loading = false, error = e.message ?: "error") }
             }
         }
     }
 
     fun setFilter(filter: Filter) {
         if (_state.value.filter == filter) return
+        gen++
         endReached = false
         _state.value = _state.value.copy(filter = filter, items = emptyList(), page = 0, error = null)
         loadNext()
@@ -155,6 +173,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setQuery(q: String) {
         if (_state.value.query == q) return
+        gen++
         endReached = false
         _state.value = _state.value.copy(query = q, items = emptyList(), page = 0, error = null)
         loadNext()
@@ -162,6 +181,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSemantic(semantic: Boolean) {
         if (_state.value.semantic == semantic) return
+        gen++
         endReached = false
         _state.value = _state.value.copy(semantic = semantic, items = emptyList(), page = 0, error = null)
         if (_state.value.query.isNotBlank()) loadNext()
@@ -183,9 +203,11 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) {
                 Uploader.uploadAll(getApplication(), url, uris) { done, total, r ->
                     if (!r.ok) failed++ else if (r.duplicate) dups++ else sent++
-                    _state.value = _state.value.copy(
-                        upload = UploadProgress(done, total, sent, dups, failed, running = done < total),
-                    )
+                    // Runs on the IO thread while the main thread also writes
+                    // _state; update{} is atomic, a read-copy-write is not.
+                    _state.update {
+                        it.copy(upload = UploadProgress(done, total, sent, dups, failed, running = done < total))
+                    }
                 }
             }
             _state.value = _state.value.copy(
@@ -264,12 +286,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         val api = api ?: return
         viewModelScope.launch {
             try {
-                api.rotate(item.id, degrees)
-                // The server bumps edit_version; mirror it so the versioned
-                // (immutably cached) thumb URL changes and the tile reloads.
+                val resp = api.rotate(item.id, degrees)
+                // The server bumps edit_version and returns it; take its value
+                // so the versioned (immutably cached) thumb URL changes and the
+                // tile reloads, and stays in step with what a refresh returns.
+                val fromServer = (resp["edit_version"] as? JsonPrimitive)?.intOrNull
                 _state.value = _state.value.copy(
                     items = _state.value.items.map {
-                        if (it.id == item.id) it.copy(editVersion = it.editVersion + 1) else it
+                        if (it.id == item.id) it.copy(editVersion = fromServer ?: (it.editVersion + 1)) else it
                     }
                 )
             } catch (e: Exception) { actionFailed(e) }
@@ -278,6 +302,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setServerUrl(url: String) {
         viewModelScope.launch {
+            gen++   // a page still in flight from the old server must not land in the new list
             settings.setServerUrl(url)
             api = PhotoApi.create(url)
             _state.value = GalleryState(serverUrl = url)

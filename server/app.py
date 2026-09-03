@@ -157,6 +157,9 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_latlng ON media(lat, lng)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_camera ON media(camera_model)")
+    # Upload de-duplication looks rows up by (name, size); without this the
+    # phone's 200-entry pre-flight check was 200 full-table scans (~10 s).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_name_size ON media(name, size)")
     # Browse indexes: every feed filters on (trashed_at, archived) and then
     # orders by capture date (dated views), file date (undated views) or
     # added_at (recent uploads). Each is a prefix walk with no sort step, so
@@ -586,10 +589,23 @@ def _placeholder_thumb() -> bytes:
     return _placeholder_bytes
 
 
+def _is_placeholder_file(p: Path) -> bool:
+    """True when the cached file is the negative-cache placeholder, not a thumb."""
+    ph = _placeholder_thumb()
+    try:
+        return p.stat().st_size == len(ph) and p.read_bytes() == ph
+    except OSError:
+        return False
+
+
 def ensure_thumb(row: sqlite3.Row) -> Path | None:
     p = thumb_path_for(row["id"])
     if p.exists() and p.stat().st_size > 0:
-        return p
+        # A cached placeholder means an earlier attempt failed. Keep the
+        # negative cache (no retry per view) but report "no thumb" so the
+        # caller serves it short-lived: the web client always asks with ?v=,
+        # and a real file on this path would be stamped immutable for a year.
+        return None if _is_placeholder_file(p) else p
     src = Path(row["path"])
     if not src.exists():
         return None
@@ -791,8 +807,10 @@ def list_media():
         where.append("LOWER(m.name) LIKE ?")
         args.append(f"%{q.lower()}%")
         # Search is scoped to the curated library: skip phone-backup uploads
-        # and unknown-date items.
-        where.append("m.album != 'uploads'")
+        # and unknown-date items. An explicit album (the Uploads view itself)
+        # is the exception, otherwise searching there could never match.
+        if not album:
+            where.append("m.album != 'uploads'")
         where.append("m.taken_at IS NOT NULL")
     if year:
         try:
@@ -821,7 +839,10 @@ def list_media():
     # feed is ordered by taken_at alone (identical to the COALESCE when
     # taken_at is never NULL), an undated feed by mtime alone.
     if sort == "added":
-        order = "COALESCE(m.added_at, m.mtime) DESC"
+        # added_at is backfilled from mtime at every startup (init_db), so the
+        # column alone is enough and idx_media_added serves the sort; a
+        # COALESCE here would force a temp B-tree over the whole album.
+        order = "m.added_at DESC"
     elif request.args.get("dated") in ("1", "true"):
         order = "m.taken_at DESC"
     elif request.args.get("undated") in ("1", "true"):
@@ -890,7 +911,7 @@ def memories():
     now = time.localtime()
     target_md = (now.tm_mon, now.tm_mday)
     rows = db().execute(
-        """SELECT id, name, kind, ext, mime, taken_at, album,
+        """SELECT id, name, kind, ext, mime, taken_at, album, edit_version,
                   strftime('%Y', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS year,
                   strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS md
            FROM media
@@ -985,7 +1006,7 @@ def search_semantic():
     # Hydrate full media rows in order
     placeholders = ",".join(["?"] * len(top_ids))
     rows = db().execute(
-        f"SELECT id,name,kind,ext,mime,size,taken_at,width,height,album, "
+        f"SELECT id,name,kind,ext,mime,size,taken_at,width,height,album, m.edit_version, "
         f"CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite, "
         f"m.trashed_at, m.archived "
         f"FROM media m LEFT JOIN favorites f ON f.media_id = m.id "
@@ -1235,7 +1256,7 @@ def media_near():
     # Bounding box quick-filter, then Haversine inside Python for accuracy.
     deg = radius_km / 111.0  # ~111 km / degree
     rows = db().execute(
-        """SELECT id,name,kind,ext,mime,size,taken_at,width,height,album,lat,lng
+        """SELECT id,name,kind,ext,mime,size,taken_at,width,height,album,lat,lng,edit_version
            FROM media
            WHERE trashed_at IS NULL
              AND lat BETWEEN ? AND ?
@@ -1338,6 +1359,13 @@ def share_file(token: str):
 # ---------- Editor ----------
 
 
+
+def _edit_version(mid: str) -> int:
+    """Current edit_version of a row, so mutating endpoints can hand the
+    client the exact value instead of making it guess with +1."""
+    r = db().execute("SELECT edit_version FROM media WHERE id = ?", (mid,)).fetchone()
+    return int(r[0] or 0) if r else 0
+
 @app.post("/api/media/<mid>/edit")
 def edit_media(mid: str):
     """Apply brightness/contrast/saturation/sharpness/auto + optional crop box.
@@ -1400,7 +1428,8 @@ def edit_media(mid: str):
             (new_w, new_h, src.stat().st_mtime, mid),
         )
         db().commit()
-        return jsonify({"ok": True, "width": new_w, "height": new_h})
+        return jsonify({"ok": True, "width": new_w, "height": new_h,
+                        "edit_version": _edit_version(mid)})
     except Exception as e:
         print(f"[edit] failed: {e}")
         abort(500, str(e))
@@ -1437,13 +1466,16 @@ def rotate_media(mid: str):
         t = thumb_path_for(mid)
         if t.exists():
             t.unlink()
-        # Update DB
+        # Bump edit_version exactly like edit_media: clients key the immutably
+        # cached thumb URL on it, so without the bump every grid would keep
+        # showing the pre-rotation tile until the browser cache expired.
         db().execute(
-            "UPDATE media SET width = ?, height = ?, mtime = ? WHERE id = ?",
+            "UPDATE media SET width = ?, height = ?, mtime = ?, edit_version = edit_version + 1 WHERE id = ?",
             (new_w, new_h, src.stat().st_mtime, mid),
         )
         db().commit()
-        return jsonify({"ok": True, "width": new_w, "height": new_h})
+        return jsonify({"ok": True, "width": new_w, "height": new_h,
+                        "edit_version": _edit_version(mid)})
     except Exception as e:
         print(f"[rotate] failed: {e}")
         abort(500, str(e))
@@ -1776,7 +1808,7 @@ def name_cluster(cid: int):
 @app.get("/api/clusters/<int:cid>/media")
 def cluster_media(cid: int):
     rows = db().execute(
-        """SELECT DISTINCT m.id, m.name, m.kind, m.ext, m.taken_at, m.album
+        """SELECT DISTINCT m.id, m.name, m.kind, m.ext, m.taken_at, m.album, m.edit_version
            FROM media m JOIN faces f ON f.media_id = m.id
            WHERE f.cluster_id = ?
            ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
@@ -1895,7 +1927,7 @@ def untag_person(pid: int, mid: str):
 @app.get("/api/persons/<int:pid>/media")
 def media_of_person(pid: int):
     rows = db().execute(
-        """SELECT m.id, m.name, m.kind, m.taken_at, m.album
+        """SELECT m.id, m.name, m.kind, m.taken_at, m.album, m.edit_version
            FROM media m JOIN person_media pm ON pm.media_id = m.id
            WHERE pm.person_id = ? ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
         (pid,),
@@ -1990,11 +2022,16 @@ def _serve(host: str, port: int) -> None:
             serve = None
         if serve is not None:
             threads = int(os.environ.get("THREADS", "16"))
+            # waitress hands bodies to its single I/O thread in send_bytes
+            # chunks (18 KB by default), and a 25 KB thumbnail then costs two
+            # select() round trips: 80 tiles took 125 ms vs 65 ms on werkzeug.
+            # A 1 MiB chunk sends any thumb in one go (50 ms for the same grid).
+            send_bytes = int(os.environ.get("SEND_BYTES", str(1 << 20)))
             print(f"[server] waitress, {threads} threads, keep-alive on")
             serve(
                 app, host=host, port=port, threads=threads,
                 max_request_body_size=app.config["MAX_CONTENT_LENGTH"],
-                channel_timeout=300, ident="chitra",
+                channel_timeout=300, ident="chitra", send_bytes=send_bytes,
             )
             return
         print("[server] waitress not installed; falling back to werkzeug")

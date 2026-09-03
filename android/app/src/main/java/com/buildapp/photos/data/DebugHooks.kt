@@ -40,7 +40,9 @@ object DebugHooks {
             settings.setBackupEnabled(on)
             if (on) BackupWorker.schedule(ctx, settings.backup.first().wifiOnly) else BackupWorker.cancel(ctx)
         }
+        // Wipe the ledger before starting a run, or the worker can read it
+        // first and find nothing to send.
+        if (intent.getBooleanExtra("ledger_clear", false)) UploadLedger.get(ctx).clear(settings.serverUrl.first())
         if (intent.getBooleanExtra("backup_now", false)) BackupWorker.runNow(ctx)
-        if (intent.getBooleanExtra("ledger_clear", false)) UploadLedger(ctx).clear(settings.serverUrl.first())
     }
 }

@@ -124,9 +124,15 @@ interface PhotoApi {
 }
 
 object Urls {
-    /** Versioned thumb URL: the server marks ?v= responses immutable, so Coil never re-fetches. */
-    fun thumb(baseUrl: String, id: String, version: Int = 0): String =
-        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb?v=$version"
+    /**
+     * Thumb URL. With a version the server marks the response immutable and
+     * Coil never re-fetches, so only pass one that came from the server
+     * (edit_version); a caller that has no version gets the short-lived
+     * unversioned URL instead of pinning "?v=0" forever.
+     */
+    fun thumb(baseUrl: String, id: String, version: Int? = null): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb" +
+            (if (version != null) "?v=$version" else "")
 
     fun full(baseUrl: String, id: String, asJpeg: Boolean = false): String {
         val base = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"

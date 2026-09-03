@@ -790,7 +790,12 @@ document.querySelector('main').addEventListener('scroll', ()=>{
   if(!tile) return;
   const ts = parseFloat(tile.dataset.ts);
   const b = $('#datebadge');
-  if(ts){
+  // Recently uploaded is ordered and grouped by upload time, so the badge
+  // must say so: a bare "September 2026" over a 2019 holiday photo reads as
+  // its capture date. dayKey() keeps badge and section headers identical.
+  if(state.view==='uploads'){
+    b.textContent = dayKey(ts || 0);
+  }else if(ts){
     const d = new Date(ts*1000);
     if(isNaN(d)) return;
     b.textContent = d.toLocaleString(undefined, {month:'long', year:'numeric'});

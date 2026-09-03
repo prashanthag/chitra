@@ -111,11 +111,13 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         when {
             liveViewerIndex != null -> liveViewerIndex = null
             staticViewer != null -> staticViewer = null
-            showSearch -> showSearch = false
+            // Sub-screens first: the search bar belongs to the gallery, so a
+            // search left open must not swallow the first back press elsewhere.
             route is Route.Editor -> route = Route.Gallery
             route is Route.ClusterMedia -> route = Route.People
             route is Route.AlbumMedia -> route = Route.Albums
             route != Route.Gallery -> route = Route.Gallery
+            showSearch -> showSearch = false
         }
     }
     // The photo picker caps multi-select at MediaStore.getPickImagesMaxLimit()
@@ -237,7 +239,11 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
             FloatingActionButton(onClick = {
-                pickMedia.launch(
+                // One batch at a time: a pick made mid-upload used to be
+                // silently discarded.
+                if (state.upload?.running == true) {
+                    scope.launch { snackbar.showSnackbar("Still uploading the last batch") }
+                } else pickMedia.launch(
                     androidx.activity.result.PickVisualMediaRequest(
                         ActivityResultContracts.PickVisualMedia.ImageAndVideo,
                     ),
@@ -323,6 +329,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     else -> Gallery(
                         items = state.items,
                         serverUrl = state.serverUrl,
+                        uploadsFeed = state.filter == Filter.UPLOADS,
                         onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
                         onLoadMore = { vm.loadNext() },
                     )
@@ -426,6 +433,13 @@ private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
     }
 }
 
+/** "Uploaded 2 September 2026": the same wording the web client's Recently uploaded view uses. */
+internal fun uploadDayLabel(epoch: Double?): String {
+    if (epoch == null || epoch <= 0) return "Upload date unknown"
+    val fmt = java.text.DateFormat.getDateInstance(java.text.DateFormat.LONG)
+    return "Uploaded " + fmt.format(java.util.Date((epoch * 1000).toLong()))
+}
+
 internal fun monthLabel(epoch: Double?): String {
     if (epoch == null || epoch <= 0) return "Undated"
     val cal = java.util.Calendar.getInstance().apply { timeInMillis = (epoch * 1000).toLong() }
@@ -442,6 +456,7 @@ internal fun Gallery(
     serverUrl: String,
     onItemClick: (MediaItem) -> Unit,
     onLoadMore: () -> Unit,
+    uploadsFeed: Boolean = false,
 ) {
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState, items.size) {
@@ -451,11 +466,14 @@ internal fun Gallery(
             .collect { onLoadMore() }
     }
     // Pre-compute section boundaries so we can insert full-width headers.
-    val sectioned = remember(items) {
+    // The Uploads feed is ordered by upload time, so it sections by upload
+    // day; sectioning it by capture month would fragment into one header per
+    // run of items.
+    val sectioned = remember(items, uploadsFeed) {
         val out = mutableListOf<Pair<String?, MediaItem>>()
         var lastLabel: String? = null
         for (m in items) {
-            val lbl = monthLabel(m.takenAt)
+            val lbl = if (uploadsFeed) uploadDayLabel(m.addedAt) else monthLabel(m.takenAt)
             if (lbl != lastLabel) {
                 out += lbl to m  // first item of new section also carries the label
                 lastLabel = lbl

@@ -103,18 +103,23 @@ fun SettingsScreen(
         } catch (e: Exception) {
             "Not reachable (${e.message ?: e.javaClass.simpleName})"
         }
-        ledgerCount = withContext(Dispatchers.IO) { UploadLedger(context).count(serverUrl) }
+        ledgerCount = withContext(Dispatchers.IO) { UploadLedger.get(context).count(serverUrl) }
     }
     LaunchedEffect(hasPerm, running?.id) {
         if (hasPerm) {
             buckets = withContext(Dispatchers.IO) { DeviceMedia.buckets(context.contentResolver) }
-            ledgerCount = withContext(Dispatchers.IO) { UploadLedger(context).count(serverUrl) }
+            ledgerCount = withContext(Dispatchers.IO) { UploadLedger.get(context).count(serverUrl) }
         }
     }
 
     fun enableBackup() = scope.launch {
+        // Persist a default folder set only once the device folders are
+        // known. Right after the permission grant the list is still empty,
+        // and writing {} here would make backup silently upload nothing.
         if (settings.backup.first().bucketIds == null) {
-            settings.setBackupBuckets(BackupPlanner.defaultBuckets(buckets))
+            val known = buckets.ifEmpty { withContext(Dispatchers.IO) { DeviceMedia.buckets(context.contentResolver) } }
+            val defaults = BackupPlanner.defaultBuckets(known)
+            if (defaults.isNotEmpty()) settings.setBackupBuckets(defaults)
         }
         settings.setBackupEnabled(true)
         BackupWorker.schedule(context, settings.backup.first().wifiOnly)
@@ -211,8 +216,10 @@ fun SettingsScreen(
             items(buckets, key = { it.id }) { b ->
                 BucketRow(b, checked = b.id in selected) { on ->
                     scope.launch {
-                        val cur = settings.backup.first().bucketIds ?: BackupPlanner.defaultBuckets(buckets)
-                        settings.setBackupBuckets(if (on) cur + b.id else cur - b.id)
+                        settings.updateBackupBuckets { cur ->
+                            val base = cur ?: BackupPlanner.defaultBuckets(buckets)
+                            if (on) base + b.id else base - b.id
+                        }
                         // A newly enabled folder backfills right away.
                         if (on && settings.backup.first().enabled) BackupWorker.runNow(context, wifiOnly = prefs.wifiOnly)
                     }

@@ -88,6 +88,93 @@ def _drop_clip_embedding():
     conn.close()
 
 
+class EditVersionTests(unittest.TestCase):
+    """Thumb URLs are ?v=<edit_version> and immutable, so every mutation must
+    bump the version and every list that feeds a grid must carry it."""
+
+    def test_rotate_bumps_edit_version_and_returns_it(self):
+        path = os.path.join(MEDIA, "CameraX", "rot.jpg")
+        Image.new("RGB", (80, 40), (5, 5, 5)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("rot.jpg")
+
+        r = client.post(f"/api/media/{mid}/rotate?degrees=90")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["edit_version"], 1)
+        self.assertEqual((r.get_json()["width"], r.get_json()["height"]), (40, 80))
+        self.assertEqual(client.get(f"/api/media/{mid}").get_json()["edit_version"], 1)
+        r2 = client.post(f"/api/media/{mid}/rotate?degrees=90")
+        self.assertEqual(r2.get_json()["edit_version"], 2)
+
+    def test_collection_feeds_carry_edit_version(self):
+        mid = id_of("one.jpg")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY,"
+                     " media_id TEXT, bbox TEXT, score REAL, embedding BLOB,"
+                     " cluster_id INTEGER)")
+        conn.execute("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (7, 'V', 1)")
+        conn.execute("INSERT INTO faces (media_id, bbox, score, cluster_id) VALUES (?,?,?,7)",
+                     (mid, "1,1,10,10", 0.9))
+        conn.execute("UPDATE media SET lat=12.9, lng=77.6 WHERE id=?", (mid,))
+        conn.commit()
+        conn.close()
+
+        def cleanup():
+            c = chitra.sqlite3.connect(chitra.DB_PATH)
+            c.execute("DELETE FROM faces WHERE cluster_id=7")
+            c.execute("UPDATE media SET lat=NULL, lng=NULL WHERE id=?", (mid,))
+            c.commit()
+            c.close()
+            _drop_clusters_table()
+        self.addCleanup(cleanup)
+
+        pid = client.post("/api/persons", json={"name": "Version Carrier"}).get_json()["id"]
+        self.assertEqual(client.post(f"/api/persons/{pid}/tag/{mid}").status_code, 200)
+
+        for url in (f"/api/persons/{pid}/media", "/api/clusters/7/media",
+                    "/api/media_near?lat=12.9&lng=77.6&radius_km=1"):
+            d = client.get(url).get_json()
+            items = d["items"] if isinstance(d, dict) else d
+            self.assertTrue(items, url)
+            self.assertTrue(all("edit_version" in i for i in items), url)
+
+
+class QueryPlanTests(unittest.TestCase):
+    """The latency work only holds if SQLite actually uses the indexes."""
+
+    def _plan(self, sql, args=()):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        rows = conn.execute("EXPLAIN QUERY PLAN " + sql, args).fetchall()
+        conn.close()
+        return " | ".join(r[3] for r in rows)
+
+    def test_duplicate_lookup_uses_name_size_index(self):
+        plan = self._plan("SELECT id FROM media WHERE name = ? AND size = ? AND trashed_at IS NULL LIMIT 1",
+                          ("x.jpg", 1))
+        self.assertIn("idx_media_name_size", plan)
+
+    def test_recently_uploaded_sort_has_no_temp_btree(self):
+        plan = self._plan(
+            "SELECT id FROM media m WHERE m.trashed_at IS NULL AND m.archived = 0 AND m.album = ? "
+            "ORDER BY m.added_at DESC LIMIT 80 OFFSET 0", ("uploads",))
+        self.assertNotIn("TEMP B-TREE", plan)
+
+    def test_search_inside_uploads_album_can_match(self):
+        # q used to add `album != 'uploads'` even when album=uploads was asked
+        # for, so the Uploads view searched for anything returned nothing.
+        total, names = totals(album="uploads", q="up")
+        self.assertEqual(names, ["up.jpg"])
+        total_all, names_all = totals(q="up")
+        self.assertNotIn("up.jpg", names_all)   # plain search still skips uploads
+
+
 class FeedFilterTests(unittest.TestCase):
     def test_plain_feed_excludes_uploads(self):
         total, names = totals()
@@ -555,6 +642,22 @@ class CacheHeaderTests(unittest.TestCase):
         # Conditional revalidation still works for clients that do it.
         r3 = client.get(f"/api/media/{mid}/thumb", headers={"If-None-Match": r.headers["ETag"]})
         self.assertEqual(r3.status_code, 304)
+
+    def test_placeholder_thumb_is_never_immutable(self):
+        # ensure_thumb negative-caches a failed thumb as the placeholder file.
+        # The web client always asks with ?v=, so serving that file through
+        # the normal path would pin a grey tile in the browser for a year.
+        mid = id_of("two.jpg")
+        p = chitra.thumb_path_for(mid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(chitra._placeholder_thumb())
+        self.addCleanup(lambda: p.unlink(missing_ok=True))
+        r = client.get(f"/api/media/{mid}/thumb?v=0")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("max-age=600", r.headers["Cache-Control"])
+        self.assertNotIn("immutable", r.headers["Cache-Control"])
+        # ...and the negative cache is kept: no regeneration behind our back.
+        self.assertEqual(p.read_bytes(), chitra._placeholder_thumb())
 
     def test_server_timing_header_on_every_response(self):
         r = client.get("/api/health")
