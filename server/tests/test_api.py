@@ -155,6 +155,67 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class ClusterMergeTests(unittest.TestCase):
+    def _setup(self):
+        import numpy as np
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER, centroid BLOB)")
+        conn.execute("CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY,"
+                     " media_id TEXT, bbox TEXT, score REAL, embedding BLOB, cluster_id INTEGER)")
+        conn.execute("DELETE FROM faces")
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        e1 = np.array([1, 0, 0, 0], dtype=np.float32).tobytes()
+        e2 = np.array([0, 1, 0, 0], dtype=np.float32).tobytes()
+        conn.executemany("INSERT INTO faces (id, media_id, bbox, score, embedding, cluster_id) VALUES (?,?,?,?,?,?)", [
+            (101, one, "1,1,9,9", 0.9, e1, 11), (102, one, "2,2,9,9", 0.5, e1, 11),
+            (103, two, "1,1,9,9", 0.99, e2, 12),
+        ])
+        conn.executemany("INSERT OR REPLACE INTO clusters (id, name, count, rep_face_id) VALUES (?,?,?,?)",
+                         [(11, "Ina", 2, 101), (12, None, 1, 103)])
+        conn.commit()
+        conn.close()
+
+        def cleanup():
+            c = chitra.sqlite3.connect(chitra.DB_PATH)
+            c.execute("DELETE FROM faces")
+            c.commit()
+            c.close()
+            _drop_clusters_table()
+        self.addCleanup(cleanup)
+
+    def test_merge_endpoint_moves_faces_and_recomputes_the_group(self):
+        import numpy as np
+        self._setup()
+        r = client.post("/api/clusters/12/merge", json={"into": 11})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["cluster"], {"id": 11, "name": "Ina", "count": 3})
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM faces WHERE cluster_id=11").fetchone()[0], 3)
+        self.assertIsNone(conn.execute("SELECT 1 FROM clusters WHERE id=12").fetchone())
+        rep, cent = conn.execute("SELECT rep_face_id, centroid FROM clusters WHERE id=11").fetchone()
+        conn.close()
+        self.assertEqual(rep, 103)   # the best-scoring face now leads the group
+        c = np.frombuffer(cent, dtype=np.float32)
+        self.assertAlmostEqual(float(np.linalg.norm(c)), 1.0, places=5)
+        self.assertGreater(c[0], c[1])   # two faces along e1, one along e2
+        self.assertEqual(client.post("/api/clusters/12/merge", json={"into": 11}).status_code, 404)
+        self.assertEqual(client.post("/api/clusters/11/merge", json={"into": 11}).status_code, 400)
+
+    def test_naming_a_group_after_an_existing_person_merges_them(self):
+        self._setup()
+        r = client.post("/api/clusters/12/name", json={"name": "ina"}).get_json()
+        self.assertEqual(r["merged_into"], 11)
+        ids = [(c["id"], c["name"], c["count"]) for c in client.get("/api/clusters").get_json()]
+        self.assertEqual(ids, [(11, "Ina", 3)])
+        # A genuinely new name still just renames.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("INSERT INTO clusters (id, name, count) VALUES (13, NULL, 1)")
+        conn.commit()
+        conn.close()
+        self.assertNotIn("merged_into", client.post("/api/clusters/13/name", json={"name": "Bala"}).get_json())
+
+
 class PeopleOrderTests(unittest.TestCase):
     def test_named_groups_first_alphabetically_then_unnamed_by_size(self):
         conn = chitra.sqlite3.connect(chitra.DB_PATH)

@@ -503,12 +503,16 @@ async function openCluster(cid, name){
   showCollection(name, items);
 }
 async function renameCluster(cid, current){
-  const name = prompt('Name this person (leave blank to just view their photos):', current || '');
+  const name = prompt('Name this person (an existing name merges the two groups; blank just views the photos):', current || '');
   if(name === null){ return; }               // cancelled - do nothing at all
   const clean = name.trim();
   if(clean && clean !== current){
-    await api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
-    toast('Saved name');
+    const r = await getJSON(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+    if(r.merged_into){
+      // Same name as another group: the server merged this one into it.
+      toast(`Merged into “${clean}” (${r.cluster.count} faces)`);
+      cid = r.merged_into;
+    }else toast('Saved name');
   }
   const items = await getJSON(`/api/clusters/${cid}/media`);
   showCollection(clean || current || 'Person', items);

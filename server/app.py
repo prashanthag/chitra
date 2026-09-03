@@ -915,7 +915,7 @@ def _readonly_guard():
     allowed = (
         request.path in ("/api/rescan", "/api/upload", "/api/upload/check",
                          "/api/media/batch_trash", "/api/media/batch_restore")
-        or request.path.endswith(("/favorite", "/trash", "/restore", "/name"))
+        or request.path.endswith(("/favorite", "/trash", "/restore", "/name", "/merge"))
         # Face/person labels and manual albums describe the library rather
         # than the files in it: neither writes a byte to any media.
         or request.path.startswith(("/api/persons", "/api/user_albums"))
@@ -2324,9 +2324,63 @@ def list_clusters():
     return jsonify([dict(r) for r in rows])
 
 
+def _merge_clusters(src: int, dst: int) -> dict:
+    """Move every face of cluster src into dst, recompute dst's count, cover
+    face and centroid (so incremental assignment keeps working), and drop
+    src. Same rule as face_indexer.merge_clusters; kept in sync by hand
+    because that module imports the ML stack at import time."""
+    import numpy as np
+
+    conn = db()
+    if src == dst or not conn.execute("SELECT 1 FROM clusters WHERE id = ?", (dst,)).fetchone():
+        abort(400, "bad merge target")
+    conn.execute("UPDATE faces SET cluster_id = ? WHERE cluster_id = ?", (dst, src))
+    rows = conn.execute(
+        "SELECT id, score, embedding FROM faces WHERE cluster_id = ?", (dst,)).fetchall()
+    if rows:
+        embs = np.stack([np.frombuffer(r["embedding"], dtype=np.float32) for r in rows])
+        cent = embs.mean(axis=0)
+        cent = cent / (np.linalg.norm(cent) or 1.0)
+        rep = max(rows, key=lambda r: r["score"] or 0)["id"]
+        conn.execute(
+            "UPDATE clusters SET count = ?, rep_face_id = ?, centroid = ? WHERE id = ?",
+            (len(rows), rep, cent.astype(np.float32).tobytes(), dst))
+    conn.execute("DELETE FROM clusters WHERE id = ?", (src,))
+    conn.commit()
+    for cid in (src, dst):   # covers change: src is gone, dst may have a new rep face
+        try:
+            cluster_thumb_path(cid).unlink()
+        except FileNotFoundError:
+            pass
+    r = conn.execute("SELECT id, name, count FROM clusters WHERE id = ?", (dst,)).fetchone()
+    return dict(r)
+
+
+@app.post("/api/clusters/<int:cid>/merge")
+def merge_cluster(cid: int):
+    """Merge this face group into another (body: {"into": <cluster id>})."""
+    into = (request.json or {}).get("into")
+    try:
+        into = int(into)
+    except (TypeError, ValueError):
+        abort(400, "into required")
+    if not db().execute("SELECT 1 FROM clusters WHERE id = ?", (cid,)).fetchone():
+        abort(404)
+    return jsonify({"ok": True, "merged_into": into, "cluster": _merge_clusters(cid, into)})
+
+
 @app.post("/api/clusters/<int:cid>/name")
 def name_cluster(cid: int):
+    """Name a face group. The same name on two groups means the same person,
+    so naming a group after an existing one merges it into that group."""
     name = (request.json or {}).get("name", "").strip()
+    if name:
+        other = db().execute(
+            "SELECT id FROM clusters WHERE id != ? AND name IS NOT NULL AND LOWER(name) = LOWER(?)",
+            (cid, name)).fetchone()
+        if other:
+            merged = _merge_clusters(cid, other["id"])
+            return jsonify({"ok": True, "merged_into": other["id"], "cluster": merged})
     db().execute("UPDATE clusters SET name = ? WHERE id = ?", (name or None, cid))
     db().commit()
     return jsonify({"ok": True})

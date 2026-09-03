@@ -307,6 +307,9 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
     # whichever new cluster inherits most of those faces. A name lands on at
     # most one cluster, so a split person leaves the other half unnamed and
     # free to be named separately rather than silently duplicating a label.
+    # Faces per name. Two groups with the same name are the same person (the
+    # server merges them on naming), so their members are pooled: that is
+    # what lets a merge survive re-clustering below.
     named_faces: dict[str, set[int]] = {}
     for cid, cname in cur.execute(
         "SELECT id, name FROM clusters WHERE name IS NOT NULL AND name != ''"
@@ -314,7 +317,7 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
         members = {r[0] for r in cur.execute(
             "SELECT id FROM faces WHERE cluster_id = ?", (cid,)).fetchall()}
         if members:
-            named_faces[cname] = members
+            named_faces.setdefault(cname, set()).update(members)
 
     cur.execute("DELETE FROM clusters")
     cur.execute("UPDATE faces SET cluster_id = NULL")
@@ -346,9 +349,43 @@ def cluster(conn: sqlite3.Connection, eps: float = 0.45, min_samples: int = 3,
 
     for cname, (_overlap, cluster_id) in best_for_name.items():
         cur.execute("UPDATE clusters SET name = ? WHERE id = ?", (cname, cluster_id))
+    # Keep earlier merges: a new group made mostly of faces the user had
+    # already filed under a name goes back into that person's group instead
+    # of reappearing as a second, unnamed copy.
+    remerged = 0
+    for cname, (_overlap, keep_id) in best_for_name.items():
+        old_members = named_faces[cname]
+        for (other_id,) in cur.execute(
+                "SELECT id FROM clusters WHERE id != ? AND name IS NULL", (keep_id,)).fetchall():
+            members = {r[0] for r in cur.execute(
+                "SELECT id FROM faces WHERE cluster_id = ?", (other_id,)).fetchall()}
+            if members and len(members & old_members) * 2 > len(members):
+                merge_clusters(conn, other_id, keep_id, commit=False)
+                remerged += 1
     if named_faces:
-        print(f"[cluster] carried over {len(best_for_name)}/{len(named_faces)} names")
+        print(f"[cluster] carried over {len(best_for_name)}/{len(named_faces)} names, "
+              f"re-merged {remerged} groups")
     conn.commit()
+
+
+def merge_clusters(conn: sqlite3.Connection, src: int, dst: int, commit: bool = True) -> None:
+    """Move every face of src into dst, recompute dst's count, cover face and
+    centroid, and drop src. app.py has the same logic for the merge endpoint."""
+    cur = conn.cursor()
+    cur.execute("UPDATE faces SET cluster_id = ? WHERE cluster_id = ?", (dst, src))
+    rows = cur.execute(
+        "SELECT id, score, embedding FROM faces WHERE cluster_id = ?", (dst,)).fetchall()
+    if rows:
+        embs = np.stack([np.frombuffer(r[2], dtype=np.float32) for r in rows])
+        cent = embs.mean(axis=0)
+        cent = cent / (np.linalg.norm(cent) or 1.0)
+        rep = max(rows, key=lambda r: r[1] or 0)[0]
+        cur.execute(
+            "UPDATE clusters SET count = ?, rep_face_id = ?, centroid = ? WHERE id = ?",
+            (len(rows), rep, cent.astype(np.float32).tobytes(), dst))
+    cur.execute("DELETE FROM clusters WHERE id = ?", (src,))
+    if commit:
+        conn.commit()
 
 
 def assign_new(conn: sqlite3.Connection, min_score: float = 0.65,
