@@ -74,6 +74,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.buildapp.photos.api.Album
+import com.buildapp.photos.api.IdsBody
+import com.buildapp.photos.api.NewAlbumBody
+import com.buildapp.photos.api.PhotoApi
+import com.buildapp.photos.api.UserAlbum
 import com.buildapp.photos.api.Cluster
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.Urls
@@ -86,6 +90,7 @@ private sealed interface Route {
     data class ClusterMedia(val cluster: Cluster) : Route
     data object Albums : Route
     data class AlbumMedia(val album: Album) : Route
+    data class UserAlbumMedia(val album: UserAlbum) : Route
     data object Map : Route
     data class Editor(val item: MediaItem) : Route
     data object Settings : Route
@@ -99,6 +104,14 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     var staticViewer by remember { mutableStateOf<Pair<List<MediaItem>, Int>?>(null) }
     var showSearch by remember { mutableStateOf(false) }
     var route by remember { mutableStateOf<Route>(Route.Gallery) }
+    // "Add to album" from any viewer opens one picker; the album screen
+    // reloads when the picker changes something.
+    var albumPickFor by remember { mutableStateOf<MediaItem?>(null) }
+    var albumsChanged by remember { mutableStateOf(0) }
+    albumPickFor?.let { item ->
+        AddToAlbumDialog(serverUrl = state.serverUrl, item = item,
+            onDismiss = { albumPickFor = null }, onChanged = { albumsChanged++ })
+    }
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -116,6 +129,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             route is Route.Editor -> route = Route.Gallery
             route is Route.ClusterMedia -> route = Route.People
             route is Route.AlbumMedia -> route = Route.Albums
+            route is Route.UserAlbumMedia -> route = Route.Albums
             route != Route.Gallery -> route = Route.Gallery
             showSearch -> showSearch = false
         }
@@ -171,7 +185,32 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 onBack = { route = Route.Gallery },
                 onAlbumSelected = { route = Route.AlbumMedia(it) },
+                onUserAlbumSelected = { route = Route.UserAlbumMedia(it) },
             )
+            return
+        }
+        is Route.UserAlbumMedia -> {
+            UserAlbumScreen(
+                serverUrl = state.serverUrl,
+                album = r.album,
+                onBack = { route = Route.Albums },
+                onDeleted = { route = Route.Albums },
+                onItemClick = { l, i -> staticViewer = l to i },
+                reloadKey = albumsChanged,
+            )
+            staticViewer?.let { (list, idx) ->
+                ViewerDialog(
+                    items = list,
+                    initialIndex = idx,
+                    serverUrl = state.serverUrl,
+                    onDismiss = { staticViewer = null },
+                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onTrash = { vm.trash(it) },
+                    onArchive = { vm.archive(it) },
+                    onRestore = { vm.restore(it) },
+                    onAddToAlbum = { albumPickFor = it },
+                )
+            }
             return
         }
         is Route.AlbumMedia -> {
@@ -191,6 +230,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
+                    onAddToAlbum = { albumPickFor = it },
                 )
             }
             return
@@ -350,6 +390,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onRestore = { vm.restore(it) },
             onRotate = { vm.rotate(it) },
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
+            onAddToAlbum = { albumPickFor = it },
         )
     }
     staticViewer?.let { (list, idx) ->
@@ -362,6 +403,66 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         )
     }
 
+}
+
+/** Picker listing every manual album with a check for the ones this item is in; tap toggles. */
+@Composable
+private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -> Unit, onChanged: () -> Unit) {
+    val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    val scope = rememberCoroutineScope()
+    var albums by remember { mutableStateOf<List<UserAlbum>?>(null) }
+    var newName by remember { mutableStateOf("") }
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(item.id, tick) {
+        albums = try { api.userAlbums(mediaId = item.id) } catch (_: Exception) { emptyList() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to album") },
+        text = {
+            Column {
+                val list = albums
+                when {
+                    list == null -> CircularProgressIndicator()
+                    list.isEmpty() -> Text("No albums yet. Create one below.", color = Color.Gray)
+                    else -> list.forEach { a ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                scope.launch {
+                                    try {
+                                        if (a.contains == true) api.removeFromUserAlbum(a.id, IdsBody(listOf(item.id)))
+                                        else api.addToUserAlbum(a.id, IdsBody(listOf(item.id)))
+                                        onChanged(); tick++
+                                    } catch (_: Exception) {}
+                                }
+                            }.padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(a.name, modifier = Modifier.weight(1f))
+                            Text("${a.count}", color = Color.Gray, fontSize = 12.sp)
+                            if (a.contains == true) Text("  ✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName, onValueChange = { newName = it }, singleLine = true,
+                        label = { Text("New album") }, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        val n = newName.trim(); if (n.isEmpty()) return@TextButton
+                        scope.launch {
+                            try {
+                                api.createUserAlbum(NewAlbumBody(n, listOf(item.id)))
+                                newName = ""; onChanged(); tick++
+                            } catch (_: Exception) {}
+                        }
+                    }) { Text("Create") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 private fun subtitleFor(state: GalleryState): String {

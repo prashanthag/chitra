@@ -15,6 +15,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddToPhotos
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -65,6 +66,7 @@ fun ViewerDialog(
     onRestore: (MediaItem) -> Unit = {},
     onRotate: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
+    onAddToAlbum: ((MediaItem) -> Unit)? = null,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -111,6 +113,11 @@ fun ViewerDialog(
                 val scope = rememberCoroutineScope()
                 IconButton(onClick = { showInfo = !showInfo }) {
                     Icon(Icons.Default.Info, contentDescription = "Info", tint = Color.White)
+                }
+                if (onAddToAlbum != null && item.trashedAt == null) {
+                    IconButton(onClick = { onAddToAlbum(item) }) {
+                        Icon(Icons.Default.AddToPhotos, contentDescription = "Add to album", tint = Color.White)
+                    }
                 }
                 IconButton(onClick = {
                     // Download the actual file and hand it to the share sheet.

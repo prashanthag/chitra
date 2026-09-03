@@ -127,6 +127,22 @@
   #infopop .ik { color:var(--dim); min-width:86px; }
   #infopop .iv { word-break:break-all; }
   #tagpop h4 { margin:0 0 10px; font-size:13px; }
+  #albumpop { position:fixed; top:64px; right:18px; width:290px; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:14px; display:none; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #albumpop.on { display:block; }
+  #albumpop h4 { margin:0 0 10px; font-size:13px; display:flex; align-items:center; }
+  #albumpop h4 .x { margin-left:auto; cursor:pointer; color:var(--dim); }
+  #albumpop .plist { max-height:240px; overflow:auto; margin-bottom:10px; }
+  #albumpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
+  #albumpop .prow:hover { background:var(--panel2); }
+  #albumpop .prow .chk { margin-left:auto; color:var(--accent); }
+  #albumpop .prow .n { color:var(--dim); font-size:11px; }
+  #albumpop .newrow { display:flex; gap:6px; }
+  #albumpop .newrow input { flex:1; min-width:0; }
+  #cards .sect { grid-column:1/-1; font-size:13px; color:var(--dim); margin:4px 0 -6px; }
+  .card .sq.new { display:flex; align-items:center; justify-content:center; font-size:34px; color:#67676f; border:1px dashed var(--line); box-sizing:border-box; }
+  .crumb .btn { padding:4px 10px; font-size:12px; }
+  .crumb .acts { margin-left:auto; display:flex; gap:6px; }
   #tagpop .plist { max-height:220px; overflow:auto; margin-bottom:10px; }
   #tagpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
   #tagpop .prow:hover { background:var(--panel2); }
@@ -186,6 +202,8 @@
       <button class="btn" title="Clear selection" onclick="clearSel()">✕</button>
       <span class="cnt" id="selCount">0 selected</span>
       <button class="btn" onclick="selectAll()">Select all</button>
+      <button class="btn" id="selAlbum" onclick="openAlbumPicker([...state.sel])">＋ Album</button>
+      <button class="btn" id="selRemove" onclick="removeSelFromAlbum()">− Remove from album</button>
       <span style="margin-left:auto"></span>
       <button class="btn danger" id="selTrash" onclick="bulkTrash()">🗑 Move to trash</button>
       <button class="btn" id="selRestore" onclick="bulkRestore()">↩ Restore</button>
@@ -206,6 +224,7 @@
     <span class="grow"></span>
     <button class="iconbtn" id="vId" title="ID / passport photo (white background)" onclick="idPhotoCurrent()">🪪</button>
     <button class="iconbtn" id="vShare" title="Share" onclick="shareCurrent()">⤴</button>
+    <button class="iconbtn" id="vAlbum" title="Add to album" onclick="openAlbumPicker([curItem().id])">⊞</button>
     <button class="iconbtn" id="vInfo" title="Info" onclick="toggleInfo()">ⓘ</button>
     <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
     <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
@@ -230,6 +249,14 @@
 <div id="datebadge"></div>
 <div class="toast" id="toast"></div>
 <div id="dropzone">Drop photos &amp; videos to upload</div>
+<div id="albumpop">
+  <h4>Add to album <span class="x" onclick="closeAlbumPicker()">✕</span></h4>
+  <div class="plist" id="albumList"></div>
+  <div class="newrow">
+    <input id="newAlbum" placeholder="New album name" onkeydown="if(event.key==='Enter')createAlbumFromPicker()" />
+    <button class="btn accent" onclick="createAlbumFromPicker()">Create</button>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -259,13 +286,15 @@ function switchView(view, params, fromPop){
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
   state.lastMonth = '';
   state.sel.clear(); updateSelBar();
-  setActive(view);
+  setActive(view==='ualbum'? 'albums' : view);
+  closeAlbumPicker();
   $('#searchbar').classList.toggle('on', view==='search');
   $('#grid').innerHTML=''; $('#cards').innerHTML=''; $('#cards').style.display='none'; $('#grid').style.display='grid';
   $('#crumb').style.display='none';
   $('#status').textContent='';
   if(view==='people'){ loadPeople(); return; }
   if(view==='albums'){ loadAlbums(); return; }
+  if(view==='ualbum'){ loadUserAlbum(state.params.id); return; }
   if(view==='cameras'){ loadCameras(); return; }
   if(view==='search'){ $('#status').textContent='Type to search.'; $('#searchInput').focus(); return; }
   loadGrid(true);
@@ -369,6 +398,8 @@ function updateSelBar(){
   $('#grid').classList.toggle('selecting', n>0);
   $('#selCount').textContent = n+' selected';
   const inTrash = state.view==='trash';
+  $('#selAlbum').style.display = inTrash? 'none':'';
+  $('#selRemove').style.display = state.view==='ualbum'? '':'none';
   $('#selTrash').style.display = inTrash? 'none':'';
   $('#selRestore').style.display = inTrash? '':'none';
   $('#selDelete').style.display = inTrash? '':'none';
@@ -479,9 +510,18 @@ async function openPerson(pid, name){
 // ---------- Albums ----------
 async function loadAlbums(){
   $('#grid').style.display='none'; $('#cards').style.display='grid'; $('#status').textContent='Loading albums…';
-  let albums=[];
-  try{ albums = await getJSON('/api/albums'); }catch(e){}
-  $('#cards').innerHTML = albums.map(a=>{
+  let albums=[], mine=[];
+  try{ [mine, albums] = await Promise.all([getJSON('/api/user_albums'), getJSON('/api/albums')]); }catch(e){}
+  // "My albums" are the manual ones (any photo, any folder); "Folders" are
+  // the directories under the library root, read-only.
+  const mineHtml = mine.map(a=>{
+    const cover = a.cover
+      ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
+      : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
+    return `<div class="card" data-ualbum="${a.id}">
+      ${cover}<div class="nm">${esc(a.name)}</div><div class="ct">${a.count} items${a.share_token?' · shared':''}</div></div>`;
+  }).join('');
+  const foldersHtml = albums.map(a=>{
     const nm = a.album==='_root'? 'Library root' : a.album;
     const cover = a.cover
       ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
@@ -489,9 +529,108 @@ async function loadAlbums(){
     return `<div class="card" data-album="${esc(a.album)}">
       ${cover}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
   }).join('');
+  $('#cards').innerHTML =
+    `<div class="sect">My albums</div>
+     <div class="card" id="newAlbumCard"><div class="sq new">＋</div><div class="nm">New album</div><div class="ct">&nbsp;</div></div>${mineHtml}
+     <div class="sect">Folders</div>${foldersHtml}`;
+  $('#newAlbumCard').addEventListener('click', createAlbumPrompt);
+  $('#cards').querySelectorAll('[data-ualbum]').forEach(el=>
+    el.addEventListener('click', ()=> switchView('ualbum', {id: el.dataset.ualbum})));
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
     el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
-  $('#status').textContent = albums.length? '' : 'No albums.';
+  $('#status').textContent = (albums.length || mine.length)? '' : 'No albums.';
+}
+async function createAlbumPrompt(){
+  const name = prompt('Album name'); if(name===null) return;
+  const clean = name.trim(); if(!clean) return;
+  const r = await getJSON('/api/user_albums', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+  switchView('ualbum', {id: r.album.id});
+}
+
+// ---------- Manual album view ----------
+async function loadUserAlbum(id){
+  $('#cards').style.display='none'; $('#grid').style.display='grid'; $('#grid').innerHTML='';
+  state.done = true;   // static list, no paging
+  let a, items=[];
+  try{ [a, items] = await Promise.all([getJSON(`/api/user_albums/${id}`), getJSON(`/api/user_albums/${id}/media`)]); }
+  catch(e){ $('#status').textContent='Album not found.'; return; }
+  $('#crumb').style.display='flex';
+  $('#crumb').innerHTML = `<span style="cursor:pointer" id="crumbBack">‹ Albums</span> · <b>${esc(a.name)}</b> · ${a.count} items
+    <span class="acts">
+      <button class="btn" onclick="renameAlbum(${a.id}, '${esc(a.name).replace(/'/g,'&#39;')}')">Rename</button>
+      <button class="btn" onclick="shareAlbum(${a.id})">${a.share_token? 'Share link' : 'Share'}</button>
+      <button class="btn danger" onclick="deleteAlbum(${a.id})">Delete album</button>
+    </span>`;
+  $('#crumbBack').addEventListener('click', ()=> switchView('albums'));
+  state.items.push(...items); appendTiles(items);
+  $('#status').textContent = items.length? '' : 'Empty album — select photos anywhere and use “＋ Album”.';
+}
+async function renameAlbum(id, current){
+  const name = prompt('Album name', current); if(name===null) return;
+  const clean = name.trim(); if(!clean || clean===current) return;
+  await api(`/api/user_albums/${id}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+  toast('Renamed'); loadUserAlbum(id);
+}
+async function shareAlbum(id){
+  const r = await getJSON(`/api/user_albums/${id}/share`, {method:'POST'});
+  const url = location.origin + r.url;
+  try{ await navigator.clipboard.writeText(url); toast('Link copied: '+url); }
+  catch(e){ prompt('Public album link (anyone with it can view):', url); }
+}
+async function deleteAlbum(id){
+  if(!confirm('Delete this album? The photos stay in the library.')) return;
+  await api(`/api/user_albums/${id}`, {method:'DELETE'});
+  toast('Album deleted'); switchView('albums');
+}
+async function removeSelFromAlbum(){
+  const ids = [...state.sel]; if(!ids.length || state.view!=='ualbum') return;
+  await getJSON(`/api/user_albums/${state.params.id}/items`, {...idsPost(ids), method:'DELETE'});
+  toast(`Removed ${ids.length}`);
+  state.sel.clear(); updateSelBar();
+  state.items=[]; loadUserAlbum(state.params.id);
+}
+
+// ---------- Add-to-album picker (selection bar and viewer) ----------
+let pickerIds = [];
+async function openAlbumPicker(ids){
+  pickerIds = (ids||[]).filter(Boolean); if(!pickerIds.length) return;
+  await renderAlbumPicker();
+  $('#albumpop').classList.add('on');
+}
+function closeAlbumPicker(){ $('#albumpop').classList.remove('on'); }
+async function renderAlbumPicker(){
+  // With one item the list shows membership and toggles; with many it adds.
+  const single = pickerIds.length===1;
+  let albums=[]; try{ albums = await getJSON('/api/user_albums'+(single? '?media_id='+encodeURIComponent(pickerIds[0]) : '')); }catch(e){}
+  $('#albumpop h4').firstChild.textContent = single? 'Add to album ' : `Add ${pickerIds.length} items to album `;
+  $('#albumList').innerHTML = albums.map(a=>`
+    <div class="prow" data-aid="${a.id}">${esc(a.name)} <span class="n">${a.count}</span><span class="chk">${a.contains?'✓':''}</span></div>`).join('')
+    || '<div style="color:var(--dim);font-size:12px">No albums yet — create one below.</div>';
+  $('#albumList').querySelectorAll('[data-aid]').forEach(el=>
+    el.addEventListener('click', ()=> toggleAlbumMembership(parseInt(el.dataset.aid,10), el)));
+}
+async function toggleAlbumMembership(aid, el){
+  const has = el.querySelector('.chk').textContent==='✓';
+  const single = pickerIds.length===1;
+  if(single && has){
+    await getJSON(`/api/user_albums/${aid}/items`, {...idsPost(pickerIds), method:'DELETE'});
+    el.querySelector('.chk').textContent=''; toast('Removed from album');
+    if(state.view==='ualbum' && String(aid)===String(state.params.id)){ state.items=[]; loadUserAlbum(aid); }
+    return;
+  }
+  const r = await getJSON(`/api/user_albums/${aid}/items`, idsPost(pickerIds));
+  el.querySelector('.chk').textContent='✓';
+  toast(r.added? `Added ${r.added} to album` : 'Already in album');
+  if(!single){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+}
+async function createAlbumFromPicker(){
+  const inp = $('#newAlbum'); const name = inp.value.trim(); if(!name) return;
+  const r = await getJSON('/api/user_albums', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name, media_ids: pickerIds})});
+  inp.value='';
+  toast(`Created “${r.album.name}” with ${r.album.count}`);
+  if(pickerIds.length>1){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+  else renderAlbumPicker();
 }
 
 // ---------- Cameras / Devices ----------

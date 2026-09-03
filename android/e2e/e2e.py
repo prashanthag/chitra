@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -182,12 +183,15 @@ def push_media(fixtures: Path):
     wait_for(indexed, 60, every=2, what="MediaStore indexing")
 
 
-def launch(**extras):
+def launch(fresh=False, **extras):
     # --activity-single-top: a relaunch while the activity is already on top
     # must reach onNewIntent. Without the flag Android just brings the task to
     # the front and drops the intent (no onCreate, no onNewIntent), so every
-    # launch after the first silently changed nothing.
-    args = [ADB, "shell", "am", "start", "-W", "--activity-single-top", "-n", f"{PKG}/.MainActivity"]
+    # launch after the first silently changed nothing. fresh=True force-stops
+    # the app first so the UI starts on the gallery regardless of where the
+    # previous step left it.
+    args = [ADB, "shell", "am", "start"] + (["-S"] if fresh else []) + \
+        ["-W", "--activity-single-top", "-n", f"{PKG}/.MainActivity"]
     for k, v in extras.items():
         if isinstance(v, bool):
             args += ["--ez", k, "true" if v else "false"]
@@ -206,14 +210,33 @@ def screenshot(name):
     return len(data)
 
 
+def ui_dump():
+    adb("shell", "uiautomator", "dump", "/sdcard/ui.xml", check=False)
+    return ET.fromstring(adb("shell", "cat", "/sdcard/ui.xml", check=False))
+
+
+def ui_texts():
+    return [n.get("text") for n in ui_dump().iter("node") if n.get("text")]
+
+
+def _tap_node(node):
+    x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.get("bounds")))
+    adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+
+
 def tap_content_desc(desc):
     """Find a node by content-desc via uiautomator and tap its centre."""
-    adb("shell", "uiautomator", "dump", "/sdcard/ui.xml", check=False)
-    xml = adb("shell", "cat", "/sdcard/ui.xml", check=False)
-    for node in ET.fromstring(xml).iter("node"):
+    for node in ui_dump().iter("node"):
         if node.get("content-desc") == desc:
-            x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.get("bounds")))
-            adb("shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
+            _tap_node(node)
+            return True
+    return False
+
+
+def tap_text(text):
+    for node in ui_dump().iter("node"):
+        if node.get("text") == text:
+            _tap_node(node)
             return True
     return False
 
@@ -303,7 +326,42 @@ def main():
         else:
             step("settings screen screenshot", True, "skipped: settings button not found via uiautomator")
 
-        # 6) Latency thresholds on the test server
+        # 6) Manual albums: create one from two uploads through the API, then
+        #    check the app lists it under "My albums" and opens it.
+        cam_ids = [i["id"] for i in uploads() if i["name"] in CAMERA][:2]
+        alb = http("/api/user_albums", "POST",
+                   json.dumps({"name": "E2E album", "media_ids": cam_ids}).encode())["album"]
+        step("album created via API", alb["count"] == 2 and alb["cover"] in cam_ids, f"id {alb['id']}")
+        launch(fresh=True, filter="all")
+        time.sleep(4)
+        if tap_content_desc("Albums"):
+            time.sleep(4)
+            texts = ui_texts()
+            step("albums screen lists the album", "My albums" in texts and "E2E album" in texts,
+                 f"texts: {[t for t in texts if 'album' in t.lower()]}")
+            screenshot("app-albums.png")
+            if tap_text("E2E album"):
+                time.sleep(4)
+                texts = ui_texts()
+                step("album opens with its two items", any(t.startswith("E2E album · 2") for t in texts),
+                     f"title: {[t for t in texts if t.startswith('E2E album')]}")
+                screenshot("app-album.png")
+            else:
+                step("album opens with its two items", False, "album tile not found via uiautomator")
+        else:
+            step("albums screen lists the album", False, "Albums button not found via uiautomator")
+        # The public link exposes exactly the members and nothing else.
+        tok = http(f"/api/user_albums/{alb['id']}/share", "POST")["token"]
+        other = [i["id"] for i in uploads() if i["id"] not in cam_ids][0]
+        page = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/s/a/{tok}", timeout=30).read().decode()
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/s/a/{tok}/file/{other}", timeout=30)
+            leaked = True
+        except urllib.error.HTTPError as e:
+            leaked = e.code != 404
+        step("album share link scoped to members", all(i in page for i in cam_ids) and not leaked)
+
+        # 7) Latency thresholds on the test server
         r = subprocess.run([PY, str(SERVER / "tests/bench_latency.py"), f"http://127.0.0.1:{PORT}",
                             "--strict", "--json", str(OUT / "bench.json")], capture_output=True, text=True)
         (OUT / "bench.txt").write_text(r.stdout + r.stderr)

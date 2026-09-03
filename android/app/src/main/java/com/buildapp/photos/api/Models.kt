@@ -64,6 +64,33 @@ data class LocationItem(
     val album: String? = null,
 )
 
+/** A manual album: a named set of media ids, independent of folders. */
+@Serializable
+data class UserAlbum(
+    val id: Int,
+    val name: String,
+    val count: Int = 0,
+    val cover: String? = null,
+    @SerialName("share_token") val shareToken: String? = null,
+    /** Only when listed with ?media_id=: whether that item is in the album. */
+    val contains: Boolean? = null,
+)
+
+@Serializable
+data class UserAlbumResp(val ok: Boolean, val album: UserAlbum, val added: Int = 0, val removed: Int = 0)
+
+@Serializable
+data class AlbumShareResp(val ok: Boolean, val token: String, val url: String)
+
+@Serializable
+data class OkResp(val ok: Boolean)
+
+@Serializable
+data class IdsBody(val ids: List<String>)
+
+@Serializable
+data class NewAlbumBody(val name: String, @SerialName("media_ids") val mediaIds: List<String> = emptyList())
+
 @Serializable
 data class ShareResp(
     val ok: Boolean,

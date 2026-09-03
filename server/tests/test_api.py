@@ -88,6 +88,73 @@ def _drop_clip_embedding():
     conn.close()
 
 
+class UserAlbumTests(unittest.TestCase):
+    def _mk(self, name, ids=()):
+        r = client.post("/api/user_albums", json={"name": name, "media_ids": list(ids)})
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.get_json()["album"]
+
+    def test_create_add_remove_cover_rename_delete(self):
+        one, two, up = id_of("one.jpg"), id_of("two.jpg"), id_of("up.jpg")
+        a = self._mk("Diwali", [one])
+        self.addCleanup(lambda: client.delete(f"/api/user_albums/{a['id']}"))
+        self.assertEqual((a["name"], a["count"], a["cover"]), ("Diwali", 1, one))
+
+        r = client.post(f"/api/user_albums/{a['id']}/items", json={"ids": [two, up, one, "nope"]})
+        self.assertEqual(r.get_json()["added"], 2)          # one was already in, nope is not media
+        items = client.get(f"/api/user_albums/{a['id']}/media").get_json()
+        self.assertEqual({i["id"] for i in items}, {one, two, up})
+        self.assertTrue(all("edit_version" in i and "favorite" in i for i in items))
+
+        # Membership flag for a picker, and the album listing.
+        lst = client.get("/api/user_albums", query_string={"media_id": two}).get_json()
+        self.assertEqual([x["contains"] for x in lst if x["id"] == a["id"]], [True])
+
+        # Cover must be a member; rename sticks.
+        self.assertEqual(client.post(f"/api/user_albums/{a['id']}", json={"cover_id": "nope"}).status_code, 400)
+        r = client.post(f"/api/user_albums/{a['id']}", json={"cover_id": up, "name": "Diwali 2025"}).get_json()["album"]
+        self.assertEqual((r["cover"], r["name"]), (up, "Diwali 2025"))
+
+        r = client.delete(f"/api/user_albums/{a['id']}/items", json={"ids": [up]}).get_json()
+        self.assertEqual(r["removed"], 1)
+        self.assertNotEqual(r["album"]["cover"], up)      # cover falls back to a live member
+
+        # Trashed members disappear from the album without being removed.
+        client.post(f"/api/media/{two}/trash")
+        self.addCleanup(lambda: client.post(f"/api/media/{two}/restore"))
+        self.assertEqual(client.get(f"/api/user_albums/{a['id']}").get_json()["count"], 1)
+
+        self.assertEqual(client.delete(f"/api/user_albums/{a['id']}").status_code, 200)
+        self.assertEqual(client.get(f"/api/user_albums/{a['id']}").status_code, 404)
+
+    def test_public_album_link_is_scoped_to_its_members(self):
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        a = self._mk("Shared", [one])
+        self.addCleanup(lambda: client.delete(f"/api/user_albums/{a['id']}"))
+        tok = client.post(f"/api/user_albums/{a['id']}/share").get_json()["token"]
+        self.assertEqual(client.post(f"/api/user_albums/{a['id']}/share").get_json()["token"], tok)
+
+        page = client.get(f"/s/a/{tok}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(f"/s/a/{tok}/thumb/{one}", page.get_data(as_text=True))
+        self.assertEqual(client.get(f"/s/a/{tok}/thumb/{one}").status_code, 200)
+        self.assertEqual(client.get(f"/s/a/{tok}/file/{one}").status_code, 200)
+        # An item outside the album is not reachable through this token.
+        self.assertEqual(client.get(f"/s/a/{tok}/file/{two}").status_code, 404)
+        self.assertEqual(client.get(f"/s/a/{tok}/thumb/{two}").status_code, 404)
+
+        client.delete(f"/api/user_albums/{a['id']}/share")
+        self.assertEqual(client.get(f"/s/a/{tok}").status_code, 404)
+
+    def test_albums_are_allowed_in_safe_mode(self):
+        old = chitra.READ_ONLY
+        chitra.READ_ONLY = True
+        self.addCleanup(lambda: setattr(chitra, "READ_ONLY", old))
+        r = client.post("/api/user_albums", json={"name": "Safe"})
+        self.assertEqual(r.status_code, 200)
+        client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
+
+
 class InfoPanelTests(unittest.TestCase):
     def test_detail_carries_exposure_settings_from_exif(self):
         path = os.path.join(MEDIA, "CameraX", "exposed.jpg")

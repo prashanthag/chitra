@@ -6,6 +6,7 @@ from __future__ import annotations
 import calendar
 import hashlib
 import io
+from html import escape
 import json
 import mimetypes
 import os
@@ -134,6 +135,24 @@ def init_db() -> None:
             FOREIGN KEY (person_id) REFERENCES persons(id),
             FOREIGN KEY (media_id) REFERENCES media(id)
         );
+
+        -- Manual albums: a named set of media ids, independent of folders.
+        CREATE TABLE IF NOT EXISTS albums (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            cover_id TEXT,
+            share_token TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS album_media (
+            album_id INTEGER NOT NULL,
+            media_id TEXT NOT NULL,
+            added_at REAL NOT NULL,
+            PRIMARY KEY (album_id, media_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_album_media_media ON album_media(media_id);
+        CREATE INDEX IF NOT EXISTS idx_albums_share ON albums(share_token);
 
         CREATE TABLE IF NOT EXISTS scan_state (
             key TEXT PRIMARY KEY,
@@ -533,6 +552,7 @@ def scan_once() -> None:
     deletes = [p for p in known.keys() if p not in seen]
     if deletes:
         cur.executemany("DELETE FROM media WHERE path = ?", [(p,) for p in deletes])
+        cur.execute("DELETE FROM album_media WHERE media_id NOT IN (SELECT id FROM media)")
         conn.commit()
 
     cur.execute(
@@ -586,6 +606,7 @@ def auto_purge_trash(age_days: int = 60) -> None:
                 t.unlink()
             except Exception:
                 pass
+        conn.execute("DELETE FROM album_media WHERE media_id = ?", (r["id"],))
         conn.execute("DELETE FROM media WHERE id = ?", (r["id"],))
     conn.commit()
     conn.close()
@@ -781,9 +802,9 @@ def _readonly_guard():
         request.path in ("/api/rescan", "/api/upload", "/api/upload/check",
                          "/api/media/batch_trash", "/api/media/batch_restore")
         or request.path.endswith(("/favorite", "/trash", "/restore", "/name"))
-        # Face/person labels describe the library rather than the files in it:
-        # naming a cluster or tagging a person writes no bytes to any media.
-        or request.path.startswith("/api/persons")
+        # Face/person labels and manual albums describe the library rather
+        # than the files in it: neither writes a byte to any media.
+        or request.path.startswith(("/api/persons", "/api/user_albums"))
     )
     if not allowed:
         return jsonify({"ok": False, "error": "read-only library"}), 403
@@ -1200,6 +1221,7 @@ def batch_delete():
                 t.unlink()
             except Exception:
                 pass
+        db().execute("DELETE FROM album_media WHERE media_id = ?", (r["id"],))
         db().execute("DELETE FROM media WHERE id = ?", (r["id"],))
         deleted += 1
     db().commit()
@@ -1454,6 +1476,79 @@ def share_file(token: str):
     return send_file(p, mimetype=r["mime"], conditional=True)
 
 
+def _shared_album(token: str) -> sqlite3.Row:
+    r = db().execute("SELECT id, name FROM albums WHERE share_token = ?", (token,)).fetchone()
+    if not r:
+        abort(404)
+    return r
+
+
+def _shared_album_item(token: str, mid: str) -> sqlite3.Row:
+    """The media row only if it belongs to the album behind this token, so a
+    link to one album never exposes anything outside it."""
+    a = _shared_album(token)
+    r = db().execute(
+        """SELECT m.* FROM media m JOIN album_media am ON am.media_id = m.id
+           WHERE am.album_id = ? AND m.id = ? AND m.trashed_at IS NULL""",
+        (a["id"], mid)).fetchone()
+    if not r:
+        abort(404)
+    return r
+
+
+@app.get("/s/a/<token>")
+def share_album_view(token: str):
+    """Public album page — no auth, by token only. Thumbs open the original."""
+    a = _shared_album(token)
+    rows = db().execute(
+        """SELECT m.id, m.name, m.kind FROM album_media am JOIN media m ON m.id = am.media_id
+           WHERE am.album_id = ? AND m.trashed_at IS NULL
+           ORDER BY COALESCE(m.taken_at, m.mtime) DESC""", (a["id"],)).fetchall()
+    tiles = "".join(
+        f'<a href="/s/a/{token}/file/{r["id"]}" target="_blank" title="{escape(r["name"])}">'
+        f'<img loading="lazy" src="/s/a/{token}/thumb/{r["id"]}" alt="{escape(r["name"])}">'
+        f'{"<span>▷</span>" if r["kind"] == "video" else ""}</a>'
+        for r in rows)
+    return (
+        f"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{escape(a['name'])}</title>
+<style>body{{margin:0;background:#0f0f11;color:#eee;font:15px system-ui,sans-serif}}
+h1{{font-size:20px;margin:18px 16px 4px}} p{{margin:0 16px 14px;color:#9a9aa2}}
+.g{{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px;padding:0 4px 24px}}
+.g a{{position:relative;display:block;aspect-ratio:1;background:#1a1a1c;overflow:hidden}}
+.g img{{width:100%;height:100%;object-fit:cover;display:block}}
+.g span{{position:absolute;right:6px;bottom:4px;font-size:14px;text-shadow:0 0 4px #000}}</style>
+<h1>{escape(a['name'])}</h1><p>{len(rows)} items</p><div class=g>{tiles}</div>""",
+        200, {"Content-Type": "text/html"})
+
+
+@app.get("/s/a/<token>/thumb/<mid>")
+def share_album_thumb(token: str, mid: str):
+    r = _shared_album_item(token, mid)
+    p = ensure_thumb(r)
+    if not p:
+        return send_file(io.BytesIO(_placeholder_thumb()), mimetype="image/jpeg", max_age=THUMB_MAX_AGE_PLAIN)
+    return send_file(p, mimetype="image/jpeg", conditional=True, max_age=THUMB_MAX_AGE_PLAIN)
+
+
+@app.get("/s/a/<token>/file/<mid>")
+def share_album_file(token: str, mid: str):
+    r = _shared_album_item(token, mid)
+    p = Path(r["path"])
+    if not p.exists():
+        abort(404)
+    if r["ext"] in (".heic", ".heif"):
+        with Image.open(p) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=90)
+            buf.seek(0)
+            return send_file(buf, mimetype="image/jpeg")
+    if r["kind"] == "video":
+        return serve_with_range(p, r["mime"])
+    return send_file(p, mimetype=r["mime"], conditional=True)
+
+
 # ---------- Editor ----------
 
 
@@ -1610,6 +1705,189 @@ def list_albums():
            SELECT album, count, id AS cover FROM t WHERE rn = 1 ORDER BY album"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+# ---------- Manual albums ----------
+# A named set of media ids, independent of the folder an item lives in
+# (folder albums above are derived from MEDIA_ROOT and read-only).
+
+_ALBUM_ITEM_COLS = (
+    "m.id, m.name, m.kind, m.ext, m.mime, m.size, m.taken_at, m.width, m.height, "
+    "m.album, m.edit_version, am.added_at AS album_added_at, "
+    "CASE WHEN f.media_id IS NULL THEN 0 ELSE 1 END AS favorite"
+)
+
+
+def _album_row(aid: int) -> dict | None:
+    r = db().execute("SELECT * FROM albums WHERE id = ?", (aid,)).fetchone()
+    if not r:
+        return None
+    d = dict(r)
+    d["count"] = db().execute(
+        """SELECT COUNT(*) FROM album_media am JOIN media m ON m.id = am.media_id
+           WHERE am.album_id = ? AND m.trashed_at IS NULL""", (aid,)).fetchone()[0]
+    # The chosen cover, if it is still a live member; else the newest member.
+    cover = None
+    if d.get("cover_id"):
+        cover = db().execute(
+            """SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
+               WHERE am.album_id = ? AND am.media_id = ? AND m.trashed_at IS NULL""",
+            (aid, d["cover_id"])).fetchone()
+    if cover is None:
+        cover = db().execute(
+            """SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
+               WHERE am.album_id = ? AND m.trashed_at IS NULL
+               ORDER BY COALESCE(m.taken_at, m.mtime) DESC LIMIT 1""", (aid,)).fetchone()
+    d["cover"] = cover["id"] if cover else None
+    return d
+
+
+def _touch_album(aid: int) -> None:
+    db().execute("UPDATE albums SET updated_at = ? WHERE id = ?", (time.time(), aid))
+
+
+@app.get("/api/user_albums")
+def list_user_albums():
+    """All manual albums, most recently changed first. With ?media_id=<id>
+    each album also says whether that item is in it (for an add-to-album
+    picker)."""
+    mid = request.args.get("media_id")
+    out = []
+    for r in db().execute("SELECT id FROM albums ORDER BY updated_at DESC").fetchall():
+        d = _album_row(r["id"])
+        if mid:
+            d["contains"] = db().execute(
+                "SELECT 1 FROM album_media WHERE album_id = ? AND media_id = ?",
+                (r["id"], mid)).fetchone() is not None
+        out.append(d)
+    return jsonify(out)
+
+
+def _album_name_from_body(body: dict) -> str:
+    name = str(body.get("name") or "").strip()
+    if not name:
+        abort(400, "name required")
+    return name[:120]
+
+
+@app.post("/api/user_albums")
+def create_user_album():
+    body = request.get_json(silent=True) or {}
+    name = _album_name_from_body(body)
+    now = time.time()
+    cur = db().execute(
+        "INSERT INTO albums (name, created_at, updated_at) VALUES (?, ?, ?)", (name, now, now))
+    aid = cur.lastrowid
+    ids = [str(i) for i in (body.get("media_ids") or []) if i]
+    if ids:
+        db().executemany(
+            "INSERT OR IGNORE INTO album_media (album_id, media_id, added_at) "
+            "SELECT ?, id, ? FROM media WHERE id = ?", [(aid, now, i) for i in ids])
+    db().commit()
+    return jsonify({"ok": True, "album": _album_row(aid)})
+
+
+@app.get("/api/user_albums/<int:aid>")
+def get_user_album(aid: int):
+    d = _album_row(aid)
+    if not d:
+        abort(404)
+    return jsonify(d)
+
+
+@app.post("/api/user_albums/<int:aid>")
+def update_user_album(aid: int):
+    """Rename and/or pick a cover (which must be a member)."""
+    if not _album_row(aid):
+        abort(404)
+    body = request.get_json(silent=True) or {}
+    if "name" in body:
+        db().execute("UPDATE albums SET name = ? WHERE id = ?", (_album_name_from_body(body), aid))
+    if "cover_id" in body:
+        cid = body.get("cover_id")
+        if cid is not None and db().execute(
+                "SELECT 1 FROM album_media WHERE album_id = ? AND media_id = ?",
+                (aid, cid)).fetchone() is None:
+            abort(400, "cover must be an item in the album")
+        db().execute("UPDATE albums SET cover_id = ? WHERE id = ?", (cid, aid))
+    _touch_album(aid)
+    db().commit()
+    return jsonify({"ok": True, "album": _album_row(aid)})
+
+
+@app.delete("/api/user_albums/<int:aid>")
+def delete_user_album(aid: int):
+    """Deletes the album only; the photos stay where they are."""
+    db().execute("DELETE FROM album_media WHERE album_id = ?", (aid,))
+    n = db().execute("DELETE FROM albums WHERE id = ?", (aid,)).rowcount
+    db().commit()
+    if not n:
+        abort(404)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/user_albums/<int:aid>/media")
+def user_album_media(aid: int):
+    if not _album_row(aid):
+        abort(404)
+    rows = db().execute(
+        f"""SELECT {_ALBUM_ITEM_COLS}
+            FROM album_media am
+            JOIN media m ON m.id = am.media_id
+            LEFT JOIN favorites f ON f.media_id = m.id
+            WHERE am.album_id = ? AND m.trashed_at IS NULL
+            ORDER BY COALESCE(m.taken_at, m.mtime) DESC""", (aid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/user_albums/<int:aid>/items")
+def add_album_items(aid: int):
+    if not _album_row(aid):
+        abort(404)
+    ids = _batch_ids()
+    now = time.time()
+    before = db().execute("SELECT COUNT(*) FROM album_media WHERE album_id = ?", (aid,)).fetchone()[0]
+    db().executemany(
+        "INSERT OR IGNORE INTO album_media (album_id, media_id, added_at) "
+        "SELECT ?, id, ? FROM media WHERE id = ?", [(aid, now, i) for i in ids])
+    after = db().execute("SELECT COUNT(*) FROM album_media WHERE album_id = ?", (aid,)).fetchone()[0]
+    _touch_album(aid)
+    db().commit()
+    return jsonify({"ok": True, "added": after - before, "album": _album_row(aid)})
+
+
+@app.delete("/api/user_albums/<int:aid>/items")
+def remove_album_items(aid: int):
+    if not _album_row(aid):
+        abort(404)
+    ids = _batch_ids()
+    cur = db().executemany(
+        "DELETE FROM album_media WHERE album_id = ? AND media_id = ?", [(aid, i) for i in ids])
+    _touch_album(aid)
+    db().commit()
+    return jsonify({"ok": True, "removed": cur.rowcount, "album": _album_row(aid)})
+
+
+@app.post("/api/user_albums/<int:aid>/share")
+def share_user_album(aid: int):
+    """Mint (or return) the public link token for an album: /s/a/<token>."""
+    import secrets
+
+    r = db().execute("SELECT share_token FROM albums WHERE id = ?", (aid,)).fetchone()
+    if not r:
+        abort(404)
+    token = r["share_token"] or secrets.token_urlsafe(12)
+    if not r["share_token"]:
+        db().execute("UPDATE albums SET share_token = ? WHERE id = ?", (token, aid))
+        db().commit()
+    return jsonify({"ok": True, "token": token, "url": f"/s/a/{token}"})
+
+
+@app.delete("/api/user_albums/<int:aid>/share")
+def revoke_album_share(aid: int):
+    db().execute("UPDATE albums SET share_token = NULL WHERE id = ?", (aid,))
+    db().commit()
+    return jsonify({"ok": True})
 
 
 @app.get("/api/cameras")

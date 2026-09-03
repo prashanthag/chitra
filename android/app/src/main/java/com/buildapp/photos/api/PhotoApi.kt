@@ -40,6 +40,28 @@ interface PhotoApi {
     @GET("api/albums")
     suspend fun albums(): List<Album>
 
+    // Manual albums
+    @GET("api/user_albums")
+    suspend fun userAlbums(@Query("media_id") mediaId: String? = null): List<UserAlbum>
+
+    @POST("api/user_albums")
+    suspend fun createUserAlbum(@retrofit2.http.Body body: NewAlbumBody): UserAlbumResp
+
+    @GET("api/user_albums/{id}/media")
+    suspend fun userAlbumMedia(@Path("id") id: Int): List<MediaItem>
+
+    @POST("api/user_albums/{id}/items")
+    suspend fun addToUserAlbum(@Path("id") id: Int, @retrofit2.http.Body body: IdsBody): UserAlbumResp
+
+    @retrofit2.http.HTTP(method = "DELETE", path = "api/user_albums/{id}/items", hasBody = true)
+    suspend fun removeFromUserAlbum(@Path("id") id: Int, @retrofit2.http.Body body: IdsBody): UserAlbumResp
+
+    @retrofit2.http.DELETE("api/user_albums/{id}")
+    suspend fun deleteUserAlbum(@Path("id") id: Int): OkResp
+
+    @POST("api/user_albums/{id}/share")
+    suspend fun shareUserAlbum(@Path("id") id: Int): AlbumShareResp
+
     @GET("api/timeline")
     suspend fun timeline(): List<TimelineBucket>
 
