@@ -171,6 +171,14 @@ object Urls {
     fun stream(baseUrl: String, id: String): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/stream.mp4"
 
+    /**
+     * Playback URL: the server redirects to the original when the phone can
+     * decode it and the bitrate suits Wi-Fi, else to the 1080p transcode.
+     * Every Android device since 2017 decodes HEVC in hardware.
+     */
+    fun play(baseUrl: String, id: String, codecs: String = "h264,hevc"): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/play?codecs=$codecs"
+
     fun clusterThumb(baseUrl: String, id: Int): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/clusters/$id/thumb"
 

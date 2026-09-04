@@ -19,6 +19,7 @@ class UrlsTest {
     fun `other urls keep their shape`() {
         assertEquals("http://h:1/api/media/abc/full?as=jpeg", Urls.full("http://h:1", "abc", asJpeg = true))
         assertEquals("http://h:1/api/media/abc/stream.mp4", Urls.stream("http://h:1/", "abc"))
+        assertEquals("http://h:1/api/media/abc/play?codecs=h264,hevc", Urls.play("http://h:1", "abc"))
         assertEquals("http://h:1/s/tok", Urls.shareLink("http://h:1", "tok"))
     }
 }

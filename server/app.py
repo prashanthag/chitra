@@ -29,6 +29,7 @@ except ImportError:
 import gpu
 
 from flask import (
+    redirect,
     Flask,
     Response,
     abort,
@@ -186,6 +187,10 @@ def init_db() -> None:
     # Quick content hash (see quick_hash): exact-copy detection that does not
     # depend on the file name. NULL until the backfill thread gets to a row.
     _add_column_if_missing(conn, "media", "content_hash TEXT")
+    # Video stream facts (ffprobe at index time): what /play needs to decide
+    # whether a client can take the original or should get the transcode.
+    _add_column_if_missing(conn, "media", "codec TEXT")
+    _add_column_if_missing(conn, "media", "bitrate INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_hash ON media(content_hash)")
     conn.execute("UPDATE media SET added_at = mtime WHERE added_at IS NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
@@ -462,6 +467,25 @@ def _video_meta(path: Path) -> dict:
         out["make"] = make
     if model:
         out["model"] = model
+    for s in j.get("streams", []):
+        if s.get("codec_type") == "video":
+            out["codec"] = s.get("codec_name")
+            # Rotated phone clips carry the rotation as metadata; report the
+            # displayed orientation so a portrait video is portrait.
+            w, h = s.get("width"), s.get("height")
+            rot = 0
+            for sd in s.get("side_data_list") or []:
+                if "rotation" in sd:
+                    rot = int(sd["rotation"])
+            if w and h:
+                out["width"], out["height"] = (h, w) if rot % 180 else (w, h)
+            break
+    try:
+        br = int(float(j.get("format", {}).get("bit_rate") or 0))
+        if br > 0:
+            out["bitrate"] = br
+    except (TypeError, ValueError):
+        pass
     dt = tags.get("com.apple.quicktime.creationdate") or tags.get("creation_time")
     if dt:
         m = re.match(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})", str(dt))
@@ -518,8 +542,8 @@ def scan_once() -> None:
         cur.executemany(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng,
-                camera_make, camera_model, content_hash, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                camera_make, camera_model, content_hash, codec, bitrate, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                        COALESCE((SELECT added_at FROM media WHERE id = ?), ?))""",
             batch,
         )
@@ -564,6 +588,8 @@ def scan_once() -> None:
                         width, height = im.size
                 except Exception:
                     pass
+            else:
+                width, height = exif.get("width"), exif.get("height")
             batch.append(
                 (
                     mid,
@@ -583,6 +609,8 @@ def scan_once() -> None:
                     cam_make,
                     cam_model,
                     quick_hash_file(full),
+                    exif.get("codec"),
+                    exif.get("bitrate"),
                     mid,
                     time.time(),
                 )
@@ -1405,16 +1433,18 @@ def upload_media():
                     width, height = im.size
             except Exception:
                 pass
+        else:
+            width, height = exif.get("width"), exif.get("height")
         db().execute(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album,
-                lat, lng, camera_make, camera_model, content_hash, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                lat, lng, camera_make, camera_model, content_hash, codec, bitrate, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 mid, str(dest), safe_name, kind, ext, mime,
                 st.st_size, st.st_mtime, taken, width, height, album,
                 exif.get("lat"), exif.get("lng"), exif.get("make"), exif.get("model"),
-                chash or quick_hash_file(dest),
+                chash or quick_hash_file(dest), exif.get("codec"), exif.get("bitrate"),
                 time.time(),
             ),
         )
@@ -2223,6 +2253,55 @@ def media_preview(mid: str):
     return _send_rendition(ensure_preview(r))
 
 
+# Direct playback of the original is only offered when the link can carry it:
+# above this the transcode (1080p, 4-6 Mbit/s) starts faster and never stalls.
+DIRECT_PLAY_MAX_BITRATE = int(os.environ.get("DIRECT_PLAY_MAX_BITRATE", str(16_000_000)))
+DIRECT_PLAY_MAX_HEIGHT = 1080
+
+
+def _video_facts(r: sqlite3.Row) -> dict:
+    """codec/bitrate/height for a video row, probing and storing them when the
+    row predates these columns."""
+    facts = {"codec": r["codec"], "bitrate": r["bitrate"], "height": r["height"], "width": r["width"]}
+    if facts["codec"] is None or facts["height"] is None:
+        m = _video_meta(Path(r["path"]))
+        facts.update({k: m.get(k) for k in ("codec", "bitrate", "height", "width") if m.get(k) is not None})
+        db().execute("UPDATE media SET codec = ?, bitrate = ?, width = ?, height = ? WHERE id = ?",
+                     (facts["codec"], facts["bitrate"], facts["width"], facts["height"], r["id"]))
+        db().commit()
+    return facts
+
+
+@app.get("/api/media/<mid>/play")
+def media_play(mid: str):
+    """Send the player to the original file or to the live transcode.
+    ?codecs=h264,hevc lists what the client can decode (h264 assumed).
+    Direct play needs a decodable codec, at most 1080p and a bitrate a Wi-Fi
+    link can sustain; anything else (a 4K 55 Mbit/s drone clip) streams as
+    1080p H.264 instead of buffering for 15 seconds."""
+    r = db().execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r or r["kind"] != "video":
+        abort(404)
+    if not Path(r["path"]).exists():
+        abort(404)
+    codecs = {c.strip().lower() for c in (request.args.get("codecs") or "h264").split(",") if c.strip()}
+    codecs.add("h264")
+    facts = _video_facts(r)
+    codec = (facts["codec"] or "").lower()
+    direct = (
+        codec in codecs
+        and (facts["height"] or 0) <= DIRECT_PLAY_MAX_HEIGHT
+        and (facts["bitrate"] or 0) <= DIRECT_PLAY_MAX_BITRATE
+        and (facts["bitrate"] or 0) > 0
+        and r["ext"] in (".mp4", ".m4v", ".mov")
+    )
+    target = f"/api/media/{mid}/full" if direct else f"/api/media/{mid}/stream.mp4"
+    resp = redirect(target, code=302)
+    resp.headers["X-Chitra-Play"] = "direct" if direct else "transcode"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.get("/api/media/<mid>/stream.mp4")
 def media_stream_mp4(mid: str):
     """Transcode any video to fragmented H.264 MP4 on the fly, hardware-accelerated
@@ -2234,41 +2313,47 @@ def media_stream_mp4(mid: str):
     src = Path(r["path"])
     if not src.exists():
         abort(404)
-    in_args, out_args = gpu.transcode_args(VIDEO_BACKEND)
-    cmd = [
-        "ffmpeg", "-loglevel", "error",
-        *in_args,
-        "-i", str(src),
-        *out_args,
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "frag_keyframe+empty_moov+faststart",
-        "-f", "mp4", "pipe:1",
-    ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def cmd_for(backend: str) -> list[str]:
+        in_args, out_args = gpu.transcode_args(backend)
+        return [
+            "ffmpeg", "-loglevel", "error",
+            *in_args,
+            "-i", str(src),
+            *out_args,
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "frag_keyframe+empty_moov+faststart",
+            "-f", "mp4", "pipe:1",
+        ]
+
+    # The GPU path first; if it produces nothing (a codec NVDEC cannot take,
+    # a driver hiccup) the same request is served by the CPU encoder instead
+    # of an empty response.
+    backends = [VIDEO_BACKEND] + ([gpu.CPU] if VIDEO_BACKEND != gpu.CPU else [])
 
     def gen():
-        streamed = False
-        try:
-            while True:
-                chunk = proc.stdout.read(1024 * 64)
-                if not chunk:
-                    break
-                streamed = True
-                yield chunk
-        finally:
+        for backend in backends:
+            proc = subprocess.Popen(cmd_for(backend), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            streamed = False
             try:
-                proc.kill()
-            except Exception:
-                pass
-            if not streamed:
+                while True:
+                    chunk = proc.stdout.read(1024 * 64)
+                    if not chunk:
+                        break
+                    streamed = True
+                    yield chunk
+            finally:
                 try:
-                    err = (proc.stderr.read() or b"").decode(errors="replace")
+                    proc.kill()
                 except Exception:
-                    err = ""
-                app.logger.error(
-                    "stream transcode produced no output for %s: %s",
-                    mid, err.strip()[-500:],
-                )
+                    pass
+            if streamed:
+                return
+            try:
+                err = (proc.stderr.read() or b"").decode(errors="replace")
+            except Exception:
+                err = ""
+            app.logger.error("stream transcode (%s) produced no output for %s: %s",
+                             backend, mid, err.strip()[-500:])
 
     return Response(gen(), mimetype="video/mp4")
 

@@ -85,17 +85,35 @@ def _works(backend: str) -> bool:
     "unsupported device" after a driver update until the machine reboots —
     which would otherwise make every transcode silently emit zero bytes.
     """
+    # Probe the encoder on a synthetic (system-memory) source. The real
+    # transcode keeps frames on the GPU (scale_cuda after NVDEC); that chain
+    # cannot take a software source, so it is not what gets tested here.
     _, out_args = transcode_args(backend, "1M", "2M", "2M")
+    out_args = _drop_vf(out_args)
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if backend == VAAPI:
         cmd += ["-vaapi_device",
                 os.environ.get("VAAPI_DEVICE", "/dev/dri/renderD128")]
+        out_args = ["-vf", "format=nv12|vaapi,hwupload", *out_args]
     cmd += ["-f", "lavfi", "-i", "color=black:size=256x144:rate=30:duration=0.2",
             *out_args, "-an", "-f", "null", "-"]
     try:
         return subprocess.run(cmd, capture_output=True, timeout=15).returncode == 0
     except Exception:
         return False
+
+
+def _drop_vf(args: list[str]) -> list[str]:
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == "-vf":
+            skip = True
+            continue
+        out.append(a)
+    return out
 
 
 def describe(backend: str) -> str:
@@ -136,29 +154,39 @@ def transcode_args(
     bitrate: str = "4M",
     maxrate: str = "6M",
     bufsize: str = "8M",
+    max_height: int = 1080,
 ) -> tuple[list[str], list[str]]:
-    """Return (input_args, output_args) for an H.264 transcode on `backend`."""
+    """Return (input_args, output_args) for an H.264 transcode on `backend`.
+
+    Output is capped at `max_height` (never upscaled): a 4K source at the
+    streaming bitrate would look worse than 1080p and cost 4x the decode
+    and encode work, which on CPU is what made playback stutter.
+    """
     rate = ["-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize]
+    cap = f"-2:'min({max_height},ih)'"
     if backend == NVIDIA:
+        # Frames stay on the GPU: decode (NVDEC) -> scale_cuda -> NVENC.
         return (
-            ["-hwaccel", "cuda"],
-            ["-c:v", "h264_nvenc", "-preset", "p3", "-tune", "hq", *rate,
-             "-pix_fmt", "yuv420p"],
+            ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"],
+            ["-vf", f"scale_cuda={cap}:format=yuv420p",
+             "-c:v", "h264_nvenc", "-preset", "p3", "-tune", "hq", *rate],
         )
     if backend == QSV:
         return (
             ["-hwaccel", "qsv"],
-            ["-c:v", "h264_qsv", "-preset", "medium", *rate, "-pix_fmt", "nv12"],
+            ["-vf", f"scale={cap}", "-c:v", "h264_qsv", "-preset", "medium", *rate,
+             "-pix_fmt", "nv12"],
         )
     if backend == VIDEOTOOLBOX:
         return (
             ["-hwaccel", "videotoolbox"],
-            ["-c:v", "h264_videotoolbox", *rate, "-pix_fmt", "yuv420p"],
+            ["-vf", f"scale={cap}", "-c:v", "h264_videotoolbox", *rate,
+             "-pix_fmt", "yuv420p"],
         )
     if backend == AMF:
         return (
             [],
-            ["-c:v", "h264_amf", "-quality", "balanced", *rate,
+            ["-vf", f"scale={cap}", "-c:v", "h264_amf", "-quality", "balanced", *rate,
              "-pix_fmt", "yuv420p"],
         )
     if backend == VAAPI:
@@ -166,11 +194,13 @@ def transcode_args(
         return (
             ["-hwaccel", "vaapi", "-hwaccel_device", dev,
              "-hwaccel_output_format", "vaapi"],
-            ["-vf", "format=nv12|vaapi,hwupload", "-c:v", "h264_vaapi", *rate],
+            ["-vf", f"format=nv12|vaapi,hwupload,scale_vaapi={cap}",
+             "-c:v", "h264_vaapi", *rate],
         )
     return (
         [],
-        ["-c:v", "libx264", "-preset", "veryfast", *rate, "-pix_fmt", "yuv420p"],
+        ["-vf", f"scale={cap}", "-c:v", "libx264", "-preset", "veryfast", *rate,
+         "-pix_fmt", "yuv420p"],
     )
 
 

@@ -155,6 +155,69 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class VideoPlaybackTests(unittest.TestCase):
+    """/play sends a client to the original only when it can carry it."""
+
+    @classmethod
+    def _clip(cls, name, size, vcodec="libx264", extra=()):
+        import subprocess
+        path = os.path.join(MEDIA, "CameraX", name)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"testsrc=duration=1:size={size}:rate=10", "-c:v", vcodec,
+                        "-pix_fmt", "yuv420p", *extra, path], check=True)
+        return path
+
+    def setUp(self):
+        self.paths = [self._clip("play_small.mp4", "320x240"),
+                      self._clip("play_tall.mp4", "320x1440"),
+                      self._clip("play_hevc.mp4", "320x240", "libx265", ["-tag:v", "hvc1"])]
+        chitra.scan_once()
+
+    def tearDown(self):
+        for p in self.paths:
+            os.remove(p)
+        chitra.scan_once()
+
+    def _play(self, name, codecs=None):
+        q = {"codecs": codecs} if codecs else {}
+        r = client.get(f"/api/media/{id_of(name)}/play", query_string=q)
+        self.assertEqual(r.status_code, 302)
+        return r.headers["Location"].rsplit("/", 1)[-1], r.headers["X-Chitra-Play"]
+
+    def test_scan_records_video_stream_facts(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        row = conn.execute("SELECT codec, bitrate, width, height FROM media WHERE name='play_tall.mp4'").fetchone()
+        conn.close()
+        self.assertEqual((row[0], row[2], row[3]), ("h264", 320, 1440))
+        self.assertGreater(row[1], 0)
+
+    def test_direct_only_for_decodable_1080p_or_less(self):
+        self.assertEqual(self._play("play_small.mp4"), ("full", "direct"))
+        self.assertEqual(self._play("play_tall.mp4"), ("stream.mp4", "transcode"))   # taller than 1080p
+        self.assertEqual(self._play("play_hevc.mp4"), ("stream.mp4", "transcode"))   # client did not claim hevc
+        self.assertEqual(self._play("play_hevc.mp4", "h264,hevc"), ("full", "direct"))
+
+    def test_bitrate_ceiling(self):
+        old = chitra.DIRECT_PLAY_MAX_BITRATE
+        chitra.DIRECT_PLAY_MAX_BITRATE = 1   # anything is "too fast for Wi-Fi"
+        self.addCleanup(lambda: setattr(chitra, "DIRECT_PLAY_MAX_BITRATE", old))
+        self.assertEqual(self._play("play_small.mp4"), ("stream.mp4", "transcode"))
+
+    def test_transcode_args_cap_at_1080p_on_every_backend(self):
+        import gpu
+        for backend in (gpu.NVIDIA, gpu.CPU, gpu.QSV, gpu.VAAPI):
+            _, out = gpu.transcode_args(backend)
+            self.assertIn("min(1080,ih)", " ".join(out), backend)
+        self.assertIn("scale_cuda", " ".join(gpu.transcode_args(gpu.NVIDIA)[1]))
+
+    def test_stream_transcode_produces_playable_mp4(self):
+        r = client.get(f"/api/media/{id_of('play_tall.mp4')}/stream.mp4")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_data()
+        self.assertGreater(len(data), 1000)
+        self.assertIn(b"ftyp", data[:64])
+
+
 class ClusterMergeTests(unittest.TestCase):
     def _setup(self):
         import numpy as np

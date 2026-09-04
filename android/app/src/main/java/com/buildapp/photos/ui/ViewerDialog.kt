@@ -85,7 +85,7 @@ fun ViewerDialog(
                     // Only the settled page gets a live player, so swiping
                     // never spins up multiple decoders.
                     if (pagerState.settledPage == page) {
-                        VideoPlayer(url = Urls.stream(serverUrl, m.id))
+                        VideoPlayer(url = Urls.play(serverUrl, m.id))
                     } else {
                         Box(Modifier.fillMaxSize().background(Color.Black)) {
                             AsyncImage(
