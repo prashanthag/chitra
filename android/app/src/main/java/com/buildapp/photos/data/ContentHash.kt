@@ -34,12 +34,18 @@ object ContentHash {
         return of(size, head, tail)
     }
 
-    /** Hash of a content:// item; null when it cannot be opened. */
-    fun of(context: Context, uri: Uri, sizeHint: Long): String? = runCatching {
+    /**
+     * Hash of a content:// item; null when it cannot be opened. Always uses
+     * the file's real size: MediaStore's SIZE column can be stale (a file
+     * rewritten in place, a still-finishing download), and since the size is
+     * part of the hash a stale value would never match the server's.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun of(context: Context, uri: Uri, sizeHint: Long = -1): String? = runCatching {
         context.contentResolver.openFileDescriptor(uri, "r")!!.use { pfd ->
             FileInputStream(pfd.fileDescriptor).use { input ->
                 val ch = input.channel
-                val size = if (sizeHint > 0) sizeHint else ch.size()
+                val size = ch.size()
                 val head = ByteArray(minOf(HEAD.toLong(), size).toInt())
                 readFully(ch, head, 0L)
                 val tail = if (size > HEAD) {

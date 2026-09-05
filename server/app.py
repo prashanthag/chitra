@@ -1409,6 +1409,11 @@ def upload_media():
             chash = None
         dup = _find_duplicate(safe_name, size_hint, chash)
         if dup is not None:
+            # A backup client pre-flights through /api/upload/check, so a
+            # duplicate arriving here means the check missed it: say why.
+            row = db().execute("SELECT name, size, content_hash FROM media WHERE id = ?", (dup,)).fetchone()
+            print(f"[upload] duplicate of {dup}: sent {safe_name} {size_hint}B hash={chash and chash[:12]} "
+                  f"| stored {row['name']} {row['size']}B hash={(row['content_hash'] or '')[:12]}")
             saved.append({"id": dup, "name": safe_name, "indexed": True,
                           "duplicate": True})
             continue
@@ -1515,7 +1520,17 @@ def upload_check():
         try:
             h = f.get("hash")
             h = str(h) if h else None
-            dup = _find_duplicate(Path(str(f.get("name", ""))).name, int(f.get("size")), h)
+            name = Path(str(f.get("name", ""))).name
+            dup = _find_duplicate(name, int(f.get("size")), h)
+            if dup is None and LOG_REQUESTS:
+                # Diagnostic: a miss for a name the library knows, with what
+                # differed (size, hash), so a client-side hashing bug shows up.
+                near = db().execute(
+                    "SELECT size, content_hash FROM media WHERE name = ? AND trashed_at IS NULL LIMIT 1",
+                    (name,)).fetchone()
+                if near:
+                    print(f"[check] miss {name}: sent {f.get('size')}B hash={(h or '')[:12] or None} "
+                          f"| library has {near['size']}B hash={(near['content_hash'] or '')[:12]}")
         except (TypeError, ValueError, AttributeError):
             dup = None
         out.append(dup)

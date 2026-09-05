@@ -83,7 +83,13 @@ class BackupWorker(
             // reached the library another way is skipped, and a new file that
             // happens to share a name and size is not.
             val exists = Uploader.check(serverUrl, chunk.map {
-                Uploader.CheckFile(it.name, it.size, ContentHash.of(ctx, Uri.parse(it.uri), it.size))
+                val uri = Uri.parse(it.uri)
+                // Real size alongside the hash: the name+size fallback on the
+                // server must not be fed a stale MediaStore size either.
+                val real = runCatching {
+                    ctx.contentResolver.openFileDescriptor(uri, "r")!!.use { pfd -> pfd.statSize }
+                }.getOrNull()?.takeIf { s -> s > 0 } ?: it.size
+                Uploader.CheckFile(it.name, real, ContentHash.of(ctx, uri))
             }).getOrNull()
             if (exists == null || exists.size != chunk.size) {
                 remaining += chunk
@@ -96,6 +102,10 @@ class BackupWorker(
                     done++
                 } else remaining += item
             }
+            // After a reinstall the pre-flight covers the whole camera roll
+            // and takes minutes; report after every chunk so the status card
+            // does not sit at 0/N until it ends.
+            progress()
         }
         progress()
 
