@@ -33,6 +33,8 @@ FACE_LIMIT=500 .venv/bin/python face_indexer.py        # cap detection batch
 
 CUDA is used opportunistically: `ffmpeg -hwaccel cuda` for video thumbs/transcode, `torch.cuda` for CLIP. Set `USE_CUDA=0` to force CPU ffmpeg.
 
+GPU video transcoding needs the driver's NVENC/NVDEC user-space libraries, which the driver package does not pull in: `apt install libnvidia-encode-<driver version> libnvidia-decode-<driver version>` (e.g. `-595`). Without them ffmpeg reports "Cannot load libnvidia-encode.so.1", `gpu.detect_backend()` falls back to CPU, and the startup line reads `video backend: CPU (libx264)` instead of `NVIDIA NVENC (CUDA)`.
+
 ### Android
 
 ```bash
