@@ -5,7 +5,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.pm.ServiceInfo
 import android.provider.MediaStore
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.ForegroundInfo
 import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -81,9 +87,24 @@ class BackupWorker(
         var sent = 0
         var dups = 0
         var failed = 0
-        suspend fun progress() = setProgress(workDataOf(
-            KEY_DONE to base + done, KEY_TOTAL to base + plan.size, KEY_SENT to sent, KEY_DUPS to dups, KEY_FAILED to failed,
-        ))
+        // A backlog of any size runs as a foreground data-sync job with a
+        // progress notification. Without it Android stops the job a couple
+        // of minutes after the screen goes off and defers the next run to a
+        // maintenance window half an hour later (observed on a Galaxy).
+        // Starting one from the background is refused on Android 12+; then
+        // the run just continues as a plain background job.
+        val foreground = plan.size >= FOREGROUND_MIN_ITEMS && try {
+            setForeground(foregroundInfo(base, base + plan.size))
+            true
+        } catch (_: Exception) {
+            false
+        }
+        suspend fun progress() {
+            setProgress(workDataOf(
+                KEY_DONE to base + done, KEY_TOTAL to base + plan.size, KEY_SENT to sent, KEY_DUPS to dups, KEY_FAILED to failed,
+            ))
+            if (foreground) notify(base + done, base + plan.size)
+        }
         progress()
 
         // Pre-flight: anything the server already has is ledgered without
@@ -167,8 +188,48 @@ class BackupWorker(
         }
     }
 
+    override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(0, 0)
+
+    private fun foregroundInfo(done: Int, total: Int): ForegroundInfo {
+        val notif = buildNotification(done, total)
+        return if (Build.VERSION.SDK_INT >= 29)
+            ForegroundInfo(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        else ForegroundInfo(NOTIF_ID, notif)
+    }
+
+    private fun buildNotification(done: Int, total: Int): android.app.Notification {
+        val ctx = applicationContext
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(CHANNEL) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(CHANNEL, "Backup progress", NotificationManager.IMPORTANCE_LOW))
+            }
+        }
+        return NotificationCompat.Builder(ctx, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle("Backing up photos")
+            .setContentText(if (total > 0) "$done / $total" else "Checking for new photos…")
+            .setProgress(total, done, total == 0)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .build()
+    }
+
+    private fun notify(done: Int, total: Int) {
+        try {
+            NotificationManagerCompat.from(applicationContext).notify(NOTIF_ID, buildNotification(done, total))
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS not granted: the job still runs, just quietly.
+        }
+    }
+
     companion object {
         private val runLock = Mutex()
+        private const val CHANNEL = "backup"
+        private const val NOTIF_ID = 4101
+        private const val FOREGROUND_MIN_ITEMS = 10
         const val WORK_NAME = "chitra-backup"
         const val WORK_NOW = "chitra-backup-now"
         const val WORK_TRIGGER = "chitra-backup-trigger"
@@ -193,7 +254,12 @@ class BackupWorker(
         }
 
         fun requiredPermissions(): Array<String> = when {
-            Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+            // Notifications are for the foreground backup's progress; the
+            // backup runs without them if the user declines.
+            Build.VERSION.SDK_INT >= 33 -> arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
             else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
 
