@@ -20,6 +20,8 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
@@ -37,7 +39,15 @@ class BackupWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+    override suspend fun doWork(): Result =
+        // One run at a time. The 15-minute sweep, the new-photo trigger and
+        // "Back up now" can all fire within a minute; unserialised they each
+        // re-planned the same roll and pre-flighted it three times over.
+        // Waiting (not skipping) so a "Back up now" that replaced a running
+        // job still runs once the cancelled one has let go.
+        runLock.withLock { runOnce() }
+
+    private suspend fun runOnce(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
         val settings = SettingsRepository(ctx)
         val prefs = settings.backup.first()
@@ -154,6 +164,7 @@ class BackupWorker(
     }
 
     companion object {
+        private val runLock = Mutex()
         const val WORK_NAME = "chitra-backup"
         const val WORK_NOW = "chitra-backup-now"
         const val WORK_TRIGGER = "chitra-backup-trigger"

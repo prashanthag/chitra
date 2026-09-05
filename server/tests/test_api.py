@@ -351,7 +351,7 @@ class ContentHashTests(unittest.TestCase):
         # Same vectors as ContentHashTest.kt: the two sides must agree bit for bit.
         big = bytes(i % 251 for i in range(3_000_000))
         self.assertEqual(chitra.quick_hash(io.BytesIO(big), len(big)),
-                         "c5bb7ac7f6125f79b92cd6d497d6c07220cfe58ae3931698eedb5b2109abf83a")
+                         "c0cf07b6c7a6aeb7bf336a2af9c5dc04364500e6a65b1249eb5b2e78be8ccf3e")
         self.assertEqual(chitra.quick_hash(io.BytesIO(b"hello chitra"), 12),
                          "a5c35e5d848a9c891a479ebaeb7083b71e8bee487416b56f2333dca466e9f7e6")
 

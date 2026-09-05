@@ -8,13 +8,14 @@ import java.security.MessageDigest
 
 /**
  * The server's quick content hash (app.py quick_hash), bit for bit:
- * SHA-256 of the byte size (8 bytes, big-endian), the first 1 MiB and the
- * last 64 KiB (tail starts at max(1 MiB, size - 64 KiB), so it never
+ * SHA-256 of the byte size (8 bytes, big-endian), the first 256 KiB and
+ * the last 64 KiB (tail starts at max(256 KiB, size - 64 KiB), so it never
  * overlaps the head). Exact copies match regardless of file name; the cost
- * is one small read per file, so the pre-flight check can be by content.
+ * is one small read per file, so a whole camera roll can be pre-flighted
+ * by content inside a background job's time budget.
  */
 object ContentHash {
-    const val HEAD = 1 shl 20
+    const val HEAD = 256 shl 10
     const val TAIL = 64 shl 10
 
     fun of(size: Long, head: ByteArray, tail: ByteArray): String {

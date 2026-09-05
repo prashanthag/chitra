@@ -273,13 +273,18 @@ def _clean_exif_str(v) -> str | None:
 
 
 # Content hash used for de-duplication on upload and scan. Not a full-file
-# digest: SHA-256 of the byte size, the first 1 MiB and the last 64 KiB.
+# digest: SHA-256 of the byte size, the first 256 KiB and the last 64 KiB.
 # That is enough to tell exact copies from everything else (two different
-# photos never share size plus their first megabyte), costs one small read
-# per file on a phone, and the Android client computes the identical value
-# (data/ContentHash.kt) so the pre-flight check can match by content.
-HASH_HEAD = 1 << 20
+# photos never share size plus their first quarter megabyte, which covers
+# the EXIF block, the embedded thumbnail and the start of the image data),
+# and it is what lets a phone pre-flight a 4,500-file camera roll inside
+# the ten minutes Android gives a background job. The Android client
+# computes the identical value (data/ContentHash.kt). HASH_SCHEME changes
+# whenever these parameters do; stored hashes from another scheme are
+# recomputed by the backfill thread.
+HASH_HEAD = 256 << 10
 HASH_TAIL = 64 << 10
+HASH_SCHEME = "v2:256k+64k"
 
 
 def quick_hash(f, size: int) -> str:
@@ -2694,12 +2699,21 @@ def start_thumb_warmer() -> None:
 def start_hash_backfill() -> None:
     """Fill media.content_hash for rows indexed before hashing existed, in
     the background after the startup scan: one small read per file, so a
-    42k-item library takes minutes, not hours."""
+    42k-item library takes minutes, not hours. When the hash parameters
+    changed since the rows were hashed, every row is redone; until then
+    de-duplication falls back to name + size for rows still NULL."""
     def loop():
         while _scan_state.get("running"):
             time.sleep(5)
         _lower_priority()
         conn = sqlite3.connect(DB_PATH)
+        stored = conn.execute("SELECT value FROM scan_state WHERE key = 'hash_scheme'").fetchone()
+        if (stored[0] if stored else None) != HASH_SCHEME:
+            print(f"[hash] scheme changed to {HASH_SCHEME}: recomputing every content hash")
+            conn.execute("UPDATE media SET content_hash = NULL")
+            conn.execute("INSERT OR REPLACE INTO scan_state (key, value) VALUES ('hash_scheme', ?)",
+                         (HASH_SCHEME,))
+            conn.commit()
         done = 0
         while True:
             rows = conn.execute(
