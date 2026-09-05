@@ -65,8 +65,12 @@ class BackupWorker(
         val buckets = prefs.bucketIds ?: BackupPlanner.defaultBuckets(DeviceMedia.buckets(cr))
         val options = BackupOptions(bucketIds = buckets, includeVideos = prefs.includeVideos)
         val ledger = UploadLedger.get(ctx)
-        val plan = BackupPlanner.plan(DeviceMedia.items(cr, buckets, prefs.includeVideos),
-            ledger.uploadedIds(serverUrl), options)
+        val already = ledger.uploadedIds(serverUrl)
+        val plan = BackupPlanner.plan(DeviceMedia.items(cr, buckets, prefs.includeVideos), already, options)
+        // Progress counts the whole roll, not just this run: Android ends a
+        // background run after about ten minutes and the next one would
+        // otherwise restart the status card at 0 / <remaining>.
+        val base = already.size
         if (plan.isEmpty()) {
             settings.setBackupStatus(now, "Up to date", 0)
             rearmTrigger(ctx, prefs, fromTrigger)
@@ -78,7 +82,7 @@ class BackupWorker(
         var dups = 0
         var failed = 0
         suspend fun progress() = setProgress(workDataOf(
-            KEY_DONE to done, KEY_TOTAL to plan.size, KEY_SENT to sent, KEY_DUPS to dups, KEY_FAILED to failed,
+            KEY_DONE to base + done, KEY_TOTAL to base + plan.size, KEY_SENT to sent, KEY_DUPS to dups, KEY_FAILED to failed,
         ))
         progress()
 
