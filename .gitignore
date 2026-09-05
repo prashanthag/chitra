@@ -42,4 +42,4 @@ server.pid
 server/.venv-mac/
 
 # Android build artifact served for sideloading (not versioned)
-server/static/chitra-app.apk
+server/static/*.apk
