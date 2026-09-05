@@ -903,9 +903,19 @@ async function addPerson(){
 }
 
 // ---------- header / health / scan polling ----------
+let UI_VERSION = null;
 async function refreshHealth(){
   try{
     const h = await getJSON('/api/health');
+    // A home-screen web app can stay open for days and keep running old
+    // code after a server update. Reload once the page on disk is newer,
+    // but never mid-upload or while the viewer is open.
+    if(h.ui_version){
+      if(UI_VERSION === null) UI_VERSION = h.ui_version;
+      else if(h.ui_version !== UI_VERSION && !(state.uploading) && !$('#viewer').classList.contains('on')){
+        location.reload(); return false;
+      }
+    }
     $('#count').textContent = h.items_indexed+' items';
     CLIP_OK = (h.clip_indexed||0) > 0;
     const s = h.scan||{};

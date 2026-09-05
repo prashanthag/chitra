@@ -217,6 +217,28 @@ class VideoPlaybackTests(unittest.TestCase):
         self.assertGreater(len(data), 1000)
         self.assertIn(b"ftyp", data[:64])
 
+    def test_stream_drops_data_tracks(self):
+        # A source with a timed-metadata data track (DJI/GoPro style) must
+        # come out as video (+ audio) only: ExoPlayer refuses unknown tracks.
+        import subprocess, tempfile
+        path = os.path.join(MEDIA, "CameraX", "play_meta.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+                        "-map", "0:v", "-map", "1:a", "-map", "2:v",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+        self.addCleanup(lambda: (os.remove(path), chitra.scan_once()))
+        chitra.scan_once()
+        r = client.get(f"/api/media/{id_of('play_meta.mp4')}/stream.mp4")
+        self.assertEqual(r.status_code, 200)
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            f.write(r.get_data())
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+                              "-of", "csv=p=0", f.name], capture_output=True, text=True).stdout.split()
+        os.remove(f.name)
+        self.assertEqual(sorted(out), ["audio", "video"])
+
 
 class ClusterMergeTests(unittest.TestCase):
     def _setup(self):

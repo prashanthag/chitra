@@ -994,9 +994,16 @@ def health():
         ).fetchone()["n"]
     except sqlite3.OperationalError:
         clip_n = 0
+    try:
+        ui_version = int((APP_DIR / "static" / "index.html").stat().st_mtime)
+    except OSError:
+        ui_version = 0
     return jsonify(
         {
             "ok": True,
+            # Web client compares this on each health refresh and reloads
+            # itself when the page on disk is newer than the one it runs.
+            "ui_version": ui_version,
             "media_root": str(MEDIA_ROOT),
             "media_root_exists": MEDIA_ROOT.exists(),
             "heic_supported": HEIC_OK,
@@ -2319,8 +2326,16 @@ def media_stream_mp4(mid: str):
             "ffmpeg", "-loglevel", "error",
             *in_args,
             "-i", str(src),
+            # First video and (if any) first audio stream only. Camera and
+            # drone files also carry timed-metadata/data tracks, which ffmpeg
+            # would otherwise copy into the output as an "unknown" track;
+            # browsers ignore it, ExoPlayer on Android refuses to play.
+            "-map", "0:v:0", "-map", "0:a:0?", "-dn", "-sn",
             *out_args,
             "-c:a", "aac", "-b:a", "128k",
+            # The muxer would otherwise add a timecode track from the
+            # source's timecode tag: another data track ExoPlayer rejects.
+            "-write_tmcd", "0",
             "-movflags", "frag_keyframe+empty_moov+faststart",
             "-f", "mp4", "pipe:1",
         ]
