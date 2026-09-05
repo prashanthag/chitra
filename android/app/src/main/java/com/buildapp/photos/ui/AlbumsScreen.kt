@@ -131,7 +131,15 @@ fun AlbumsScreen(
                         UserAlbumTile(a, serverUrl, onClick = { onUserAlbumSelected(a) })
                     }
                     item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Folders") }
-                    items(albums!!, key = { it.album }) { a ->
+                    val phone = albums!!.filter { it.folder != null }
+                    if (phone.isNotEmpty()) {
+                        item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Phone folders") }
+                        items(phone, key = { it.key }) { a ->
+                            AlbumTile(a, serverUrl, api, onClick = { onAlbumSelected(a) })
+                        }
+                        item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Folders") }
+                    }
+                    items(albums!!.filter { it.folder == null }, key = { it.key }) { a ->
                         AlbumTile(a, serverUrl, api, onClick = { onAlbumSelected(a) })
                     }
                 }
@@ -264,10 +272,11 @@ fun UserAlbumScreen(
 
 @Composable
 private fun AlbumTile(album: Album, serverUrl: String, api: PhotoApi, onClick: () -> Unit) {
-    var coverId by remember(album.album) { mutableStateOf<String?>(null) }
-    LaunchedEffect(album.album) {
+    var coverId by remember(album.key) { mutableStateOf<String?>(album.cover) }
+    LaunchedEffect(album.key) {
+        if (coverId != null) return@LaunchedEffect
         try {
-            val resp = api.media(page = 1, perPage = 1, album = album.album)
+            val resp = api.media(page = 1, perPage = 1, album = album.album, folder = album.folder)
             coverId = resp.items.firstOrNull()?.id
         } catch (_: Exception) {}
     }
@@ -292,12 +301,12 @@ private fun AlbumTile(album: Album, serverUrl: String, api: PhotoApi, onClick: (
             }
         }
         Text(
-            album.album,
+            album.label,
             modifier = Modifier.padding(top = 6.dp),
             style = MaterialTheme.typography.titleSmall,
         )
         Text(
-            "${album.count} items",
+            "${album.count} items" + (album.device?.let { " · $it" } ?: ""),
             color = Color.Gray,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -313,17 +322,17 @@ fun AlbumMediaScreen(
     onItemClick: (List<MediaItem>, Int) -> Unit,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
-    var items by remember(album.album) { mutableStateOf<List<MediaItem>>(emptyList()) }
-    var page by remember(album.album) { mutableStateOf(0) }
-    var loading by remember(album.album) { mutableStateOf(false) }
-    var endReached by remember(album.album) { mutableStateOf(false) }
-    var loadTick by remember(album.album) { mutableStateOf(0) }
+    var items by remember(album.key) { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var page by remember(album.key) { mutableStateOf(0) }
+    var loading by remember(album.key) { mutableStateOf(false) }
+    var endReached by remember(album.key) { mutableStateOf(false) }
+    var loadTick by remember(album.key) { mutableStateOf(0) }
 
-    LaunchedEffect(album.album, loadTick) {
+    LaunchedEffect(album.key, loadTick) {
         if (loading || endReached) return@LaunchedEffect
         loading = true
         try {
-            val resp = api.media(page = page + 1, perPage = 80, album = album.album)
+            val resp = api.media(page = page + 1, perPage = 80, album = album.album, folder = album.folder)
             items = items + resp.items
             page += 1
             if (resp.items.size < resp.perPage) endReached = true
@@ -334,7 +343,7 @@ fun AlbumMediaScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("${album.album} · ${album.count}") },
+                title = { Text("${album.label} · ${album.count}") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
                 },

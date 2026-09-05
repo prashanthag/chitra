@@ -191,6 +191,20 @@ def init_db() -> None:
     # whether a client can take the original or should get the transcode.
     _add_column_if_missing(conn, "media", "codec TEXT")
     _add_column_if_missing(conn, "media", "bitrate INTEGER")
+    # Where an upload came from: the phone (its device name) and the folder
+    # on it (Camera, WhatsApp Images, Screenshots...). Lets uploads be
+    # browsed as phone folders and a downloaded image with no camera EXIF be
+    # attributed to the phone it lives on.
+    _add_column_if_missing(conn, "media", "source_device TEXT")
+    _add_column_if_missing(conn, "media", "source_folder TEXT")
+    # 1 for anything that arrived through /api/upload, wherever it was filed.
+    # Uploads with a known camera (or phone) are filed into the library's
+    # "<Make Model>/<YYYY>/<MM-Mon>" scheme like everything else; the
+    # "Recently uploaded" feed is this flag ordered by added_at.
+    _add_column_if_missing(conn, "media", "uploaded INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE media SET uploaded = 1 WHERE uploaded = 0 AND (album = 'uploads' OR source_device IS NOT NULL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_uploaded ON media(uploaded, trashed_at, added_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_source ON media(uploaded, source_folder)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_hash ON media(content_hash)")
     conn.execute("UPDATE media SET added_at = mtime WHERE added_at IS NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_share ON media(share_token)")
@@ -547,8 +561,12 @@ def scan_once() -> None:
         cur.executemany(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album, lat, lng,
-                camera_make, camera_model, content_hash, codec, bitrate, added_at)
+                camera_make, camera_model, content_hash, codec, bitrate,
+                source_device, source_folder, uploaded, added_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                       (SELECT source_device FROM media WHERE id = ?),
+                       (SELECT source_folder FROM media WHERE id = ?),
+                       MAX(COALESCE((SELECT uploaded FROM media WHERE id = ?), 0), ?),
                        COALESCE((SELECT added_at FROM media WHERE id = ?), ?))""",
             batch,
         )
@@ -616,6 +634,9 @@ def scan_once() -> None:
                     quick_hash_file(full),
                     exif.get("codec"),
                     exif.get("bitrate"),
+                    # A rescan of a changed file must not forget where an
+                    # upload came from, nor that it was one.
+                    mid, mid, mid, 1 if album == "uploads" else 0,
                     mid,
                     time.time(),
                 )
@@ -947,6 +968,7 @@ def _readonly_guard():
         return None
     allowed = (
         request.path in ("/api/rescan", "/api/upload", "/api/upload/check",
+                         "/api/uploads/organize",
                          "/api/media/batch_trash", "/api/media/batch_restore")
         or request.path.endswith(("/favorite", "/trash", "/restore", "/name", "/merge"))
         # Face/person labels and manual albums describe the library rather
@@ -1063,10 +1085,15 @@ def list_media():
         where.append("m.taken_at IS NOT NULL")
     if request.args.get("undated") in ("1", "true"):
         where.append("m.taken_at IS NULL")
-    if album:
+    folder = request.args.get("folder")
+    if album == "uploads":
+        # The uploads feed: everything that came through /api/upload, whether
+        # it was filed into a camera folder or still sits in uploads/.
+        where.append("m.uploaded = 1")
+    elif album:
         where.append("m.album = ?")
         args.append(album)
-    elif not (trashed_only or camera or favorites_only or year):
+    elif not (trashed_only or camera or favorites_only or year or folder):
         # Phone-backup uploads stay out of the plain browse feeds; explicit
         # camera/favorites/album/year filters see them (search does not).
         where.append("m.album != 'uploads'")
@@ -1085,6 +1112,10 @@ def list_media():
         if not album:
             where.append("m.album != 'uploads'")
         where.append("m.taken_at IS NOT NULL")
+    if folder:
+        # A phone folder (source_folder), on its own or within the uploads feed.
+        where.append("m.source_folder = ?")
+        args.append(folder)
     if year:
         try:
             y = int(year)
@@ -1388,12 +1419,51 @@ def archive_media(mid: str):
     return jsonify({"ok": True, "archived": bool(new)})
 
 
+def _clean_dirname(s: str | None) -> str:
+    s = "".join(ch for ch in (s or "") if ch.isprintable() and ch not in "/\\:*?\"<>|")
+    return " ".join(s.split()).strip(". ")
+
+
+def camera_dir_name(make: str | None, model: str | None) -> str | None:
+    """The library's top-level folder for a camera: "samsung Galaxy Z Fold6",
+    "Apple iPhone 13 mini", or just the model when it already starts with
+    the make ("Canon EOS 5D Mark IV"). None when nothing is known."""
+    make, model = _clean_dirname(make), _clean_dirname(model)
+    if not make and not model:
+        return None
+    if make and model and model.lower().startswith(make.lower()):
+        return model
+    return " ".join(x for x in (make, model) if x)
+
+
+def organized_dir(make: str | None, model: str | None, when: float | None) -> str | None:
+    """Relative folder an item belongs in: "<camera>/<YYYY>/<MM-Mon>", the
+    same scheme the recovered library uses; None when the camera is unknown."""
+    label = camera_dir_name(make, model)
+    if not label:
+        return None
+    t = time.localtime(when or time.time())
+    return f"{label}/{t.tm_year}/{time.strftime('%m-%b', t)}"
+
+
+def _free_dest(dest_dir: Path, name: str) -> Path:
+    dest = dest_dir / name
+    i = 1
+    while dest.exists():
+        dest = dest_dir / f"{Path(name).stem}_{i}{Path(name).suffix}"
+        i += 1
+    return dest
+
+
 @app.post("/api/upload")
 def upload_media():
-    """Multipart upload from clients. Saves to MEDIA_ROOT/uploads/YYYY-MM-DD/
-    and immediately indexes the new files."""
+    """Multipart upload from clients. Files with a known camera (EXIF, or the
+    uploading phone for EXIF-less files) are filed straight into the library's
+    "<camera>/<YYYY>/<MM-Mon>/" scheme; the rest land in uploads/YYYY-MM-DD/.
+    Everything is indexed immediately."""
     upload_dir = MEDIA_ROOT / "uploads" / time.strftime("%Y-%m-%d")
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    staging = MEDIA_ROOT / "uploads" / ".incoming"   # hidden: the scanner skips it
+    staging.mkdir(parents=True, exist_ok=True)
     saved = []
     # Collect every uploaded file, including multiple parts that share a field
     # name (MultiDict.values() would yield only the first per key).
@@ -1422,46 +1492,61 @@ def upload_media():
             saved.append({"id": dup, "name": safe_name, "indexed": True,
                           "duplicate": True})
             continue
-        dest = upload_dir / safe_name
-        # Avoid clobber
-        i = 1
-        while dest.exists():
-            stem, suf = dest.stem, dest.suffix
-            dest = upload_dir / f"{stem}_{i}{suf}"
-            i += 1
-        f.save(dest)
-        # Add to index immediately so it shows up without waiting for rescan
-        ext = dest.suffix.lower()
+        ext = Path(safe_name).suffix.lower()
         kind = classify(ext)
         if not kind:
             saved.append({"name": safe_name, "indexed": False, "reason": "unsupported_ext"})
             continue
-        st = dest.stat()
-        mid = make_id(dest)
-        mime = mimetypes.guess_type(safe_name)[0]
-        rel = dest.relative_to(MEDIA_ROOT)
-        album = rel.parts[0] if len(rel.parts) > 1 else "_root"
-        exif = extract_exif(dest, kind)
+        # Save to a hidden staging folder first: where the file belongs
+        # depends on its EXIF, which needs the bytes on disk.
+        tmp = _free_dest(staging, f"{int(time.time() * 1000)}-{safe_name}")
+        f.save(tmp)
+        exif = extract_exif(tmp, kind)
         taken = exif.get("taken_at")
         width = height = None
         if kind == "photo":
             try:
-                with Image.open(dest) as im:
+                with Image.open(tmp) as im:
                     width, height = im.size
             except Exception:
                 pass
         else:
             width, height = exif.get("width"), exif.get("height")
+        # Backup clients say which device and folder the file came from.
+        # A file with no camera in its EXIF (a download, a WhatsApp image, a
+        # screenshot) is filed under the phone it was backed up from, so the
+        # Cameras view has somewhere to put it.
+        device = (request.form.get("device") or "").strip()[:80] or None
+        device_make = (request.form.get("device_make") or "").strip()[:40] or None
+        folder = (request.form.get("folder") or "").strip()[:120] or None
+        cam_make, cam_model = exif.get("make"), exif.get("model")
+        if not cam_make and not cam_model and device:
+            cam_make, cam_model = device_make, device
+        # File it: into the library's camera/year/month scheme when the camera
+        # is known, else into today's uploads folder (hidden from the browse
+        # feeds until someone can say what it is).
+        sub = organized_dir(cam_make, cam_model, taken)
+        dest_dir = (MEDIA_ROOT / sub) if sub else upload_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = _free_dest(dest_dir, safe_name)
+        tmp.rename(dest)
+        st = dest.stat()
+        mid = make_id(dest)
+        mime = mimetypes.guess_type(safe_name)[0]
+        rel = dest.relative_to(MEDIA_ROOT)
+        album = rel.parts[0] if len(rel.parts) > 1 else "_root"
         db().execute(
             """INSERT OR REPLACE INTO media
                (id, path, name, kind, ext, mime, size, mtime, taken_at, width, height, album,
-                lat, lng, camera_make, camera_model, content_hash, codec, bitrate, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                lat, lng, camera_make, camera_model, content_hash, codec, bitrate,
+                source_device, source_folder, uploaded, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (
                 mid, str(dest), safe_name, kind, ext, mime,
                 st.st_size, st.st_mtime, taken, width, height, album,
-                exif.get("lat"), exif.get("lng"), exif.get("make"), exif.get("model"),
+                exif.get("lat"), exif.get("lng"), cam_make, cam_model,
                 chash or quick_hash_file(dest), exif.get("codec"), exif.get("bitrate"),
+                device, folder,
                 time.time(),
             ),
         )
@@ -1507,6 +1592,68 @@ def _find_duplicate(name: str, size: int | None, content_hash: str | None = None
     if content_hash and r["content_hash"] and r["content_hash"] != content_hash:
         return None
     return r["id"]
+
+
+_organize_state = {"running": False, "moved": 0, "skipped": 0, "total": 0}
+
+
+def organize_uploads() -> None:
+    """Move files still in uploads/ that have a known camera into the
+    library's "<camera>/<YYYY>/<MM-Mon>/" scheme, keeping their ids (and
+    with them favorites, albums, faces, cached thumbs). Runs under the scan
+    lock so a rescan cannot see a half-moved file."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT id, path, name, camera_make, camera_model, taken_at, mtime FROM media
+           WHERE album = 'uploads' AND (camera_make IS NOT NULL OR camera_model IS NOT NULL)"""
+    ).fetchall()
+    _organize_state.update(running=True, moved=0, skipped=0, total=len(rows))
+    try:
+      with _scan_lock:
+        for r in rows:
+            sub = organized_dir(r["camera_make"], r["camera_model"], r["taken_at"] or r["mtime"])
+            src = Path(r["path"])
+            if not sub or not src.exists():
+                _organize_state["skipped"] += 1
+                continue
+            dest_dir = MEDIA_ROOT / sub
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = _free_dest(dest_dir, src.name)
+                src.rename(dest)
+            except OSError as e:
+                # A folder the server cannot write (ownership) or a move
+                # across filesystems: leave the file where it is.
+                if _organize_state["skipped"] < 5:
+                    print(f"[organize] could not move {src}: {e}")
+                _organize_state["skipped"] += 1
+                continue
+            conn.execute("UPDATE media SET path = ?, album = ?, uploaded = 1 WHERE id = ?",
+                         (str(dest), sub.split("/")[0], r["id"]))
+            _organize_state["moved"] += 1
+            if _organize_state["moved"] % 500 == 0:
+                conn.commit()
+                print(f"[organize] {_organize_state['moved']}/{len(rows)}")
+        conn.commit()
+    finally:
+        conn.close()
+        _organize_state["running"] = False
+    print(f"[organize] done: moved {_organize_state['moved']}, skipped {_organize_state['skipped']}")
+
+
+@app.post("/api/uploads/organize")
+def organize_uploads_endpoint():
+    """Start the one-off move of already-uploaded files into the camera
+    scheme (background). GET the same path for progress."""
+    if not _organize_state["running"]:
+        threading.Thread(target=organize_uploads, daemon=True, name="organize").start()
+    return jsonify({"ok": True, **_organize_state})
+
+
+@app.get("/api/uploads/organize")
+def organize_status():
+    return jsonify(_organize_state)
 
 
 @app.post("/api/upload/check")
@@ -1888,7 +2035,23 @@ def list_albums():
              FROM media WHERE trashed_at IS NULL)
            SELECT album, count, id AS cover FROM t WHERE rn = 1 ORDER BY album"""
     ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    out = [dict(r) for r in rows]
+    # Phone folders: uploads grouped by the folder they came from on the
+    # device (Camera, WhatsApp Images, ...). Opened with
+    # /api/media?album=uploads&folder=<folder>.
+    folders = db().execute(
+        """WITH t AS (
+             SELECT id, source_folder, source_device,
+                    ROW_NUMBER() OVER (PARTITION BY source_folder
+                                       ORDER BY COALESCE(taken_at, mtime) DESC) AS rn,
+                    COUNT(*) OVER (PARTITION BY source_folder) AS count
+             FROM media
+             WHERE uploaded = 1 AND source_folder IS NOT NULL AND trashed_at IS NULL)
+           SELECT source_folder AS folder, source_device AS device, count, id AS cover
+           FROM t WHERE rn = 1 ORDER BY count DESC"""
+    ).fetchall()
+    out += [{"album": "uploads", **dict(r)} for r in folders]
+    return jsonify(out)
 
 
 # ---------- Manual albums ----------

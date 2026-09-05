@@ -148,7 +148,7 @@ class BackupWorker(
         for (item in remaining) {
             if (isStopped) break
             val uri = Uri.parse(item.uri)
-            val r = Uploader.uploadOne(ctx, serverUrl, uri, item.name, item.size, cr.getType(uri))
+            val r = Uploader.uploadOne(ctx, serverUrl, uri, item.name, item.size, cr.getType(uri), folder = item.bucketName)
             done++
             if (r.ok) {
                 consecutiveFailures = 0

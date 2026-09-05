@@ -536,23 +536,29 @@ async function loadAlbums(){
     return `<div class="card" data-ualbum="${a.id}">
       ${cover}<div class="nm">${esc(a.name)}</div><div class="ct">${a.count} items${a.share_token?' · shared':''}</div></div>`;
   }).join('');
-  const foldersHtml = albums.map(a=>{
-    const nm = a.album==='_root'? 'Library root' : a.album;
-    const cover = a.cover
+  const coverOf = a => a.cover
       ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
       : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
+  // Phone folders: uploads grouped by the folder they came from on the
+  // device (Camera, WhatsApp Images...), as reported by the backup app.
+  const phoneHtml = albums.filter(a=>a.folder).map(a=>
+    `<div class="card" data-album="uploads" data-folder="${esc(a.folder)}">
+      ${coverOf(a)}<div class="nm">${esc(a.folder)}</div><div class="ct">${a.count} items${a.device? ' · '+esc(a.device) : ''}</div></div>`).join('');
+  const foldersHtml = albums.filter(a=>!a.folder).map(a=>{
+    const nm = a.album==='_root'? 'Library root' : a.album;
     return `<div class="card" data-album="${esc(a.album)}">
-      ${cover}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
+      ${coverOf(a)}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
   }).join('');
   $('#cards').innerHTML =
     `<div class="sect">My albums</div>
      <div class="card" id="newAlbumCard"><div class="sq new">＋</div><div class="nm">New album</div><div class="ct">&nbsp;</div></div>${mineHtml}
+     ${phoneHtml? '<div class="sect">Phone folders</div>'+phoneHtml : ''}
      <div class="sect">Folders</div>${foldersHtml}`;
   $('#newAlbumCard').addEventListener('click', createAlbumPrompt);
   $('#cards').querySelectorAll('[data-ualbum]').forEach(el=>
     el.addEventListener('click', ()=> switchView('ualbum', {id: el.dataset.ualbum})));
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
-    el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
+    el.addEventListener('click', ()=> switchView('photos', el.dataset.folder? {album: el.dataset.album, folder: el.dataset.folder} : {album: el.dataset.album})));
   $('#status').textContent = (albums.length || mine.length)? '' : 'No albums.';
 }
 async function createAlbumPrompt(){
@@ -857,6 +863,8 @@ async function toggleInfo(){
     ['Type', [(d.kind||''), (d.ext||'').replace('.','').toUpperCase()].filter(Boolean).join(' · ')],
     ['Size', fmtSize(d.size)],
     ['Folder', d.album],
+    ['Phone folder', d.source_folder],
+    ['Backed up from', d.source_device],
     ['Place', d.place],
     ['Location', d.lat!=null&&d.lng!=null? `${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}` : null],
     ['File date', fmtDate(d.mtime)],

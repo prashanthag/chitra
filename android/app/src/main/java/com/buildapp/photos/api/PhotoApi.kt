@@ -25,6 +25,8 @@ interface PhotoApi {
         @Query("per_page") perPage: Int = 60,
         @Query("kind") kind: String? = null,
         @Query("album") album: String? = null,
+        /** Phone folder inside the uploads album (see Album.folder). */
+        @Query("folder") folder: String? = null,
         @Query("q") q: String? = null,
         @Query("favorites") favorites: Int? = null,
         @Query("year") year: Int? = null,

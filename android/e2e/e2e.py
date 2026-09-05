@@ -298,6 +298,18 @@ def main():
                        what="screenshot backfill")
         names = set(i["name"] for i in got)
         step("newly enabled folder backfilled", names == want | set(SHOTS), f"{len(names)} items")
+        # The app tags each upload with its phone folder and device name.
+        shots = http("/api/media?album=uploads&folder=Screenshots&per_page=100")["items"]
+        folders = {a.get("folder"): a for a in http("/api/albums") if a.get("folder")}
+        detail = http(f"/api/media/{shots[0]['id']}") if shots else {}
+        step("uploads carry phone folder and device",
+             {i["name"] for i in shots} == set(SHOTS) and {"Camera", "Screenshots"} <= set(folders)
+             and bool(detail.get("source_device")),
+             f"folders {sorted(folders)}, device {detail.get('source_device')!r}")
+        # ...and are filed under the phone's name, not left in uploads/.
+        step("uploads filed under the phone, not in uploads/",
+             detail.get("album") not in (None, "uploads") and "/uploads/" not in detail.get("path", ""),
+             f"album {detail.get('album')!r}")
 
         # 4) Simulated reinstall: ledger wiped, server de-dup must stop re-sends
         posts_before = server_log_count(r"POST /api/upload ")
@@ -312,7 +324,9 @@ def main():
              f"{n_after} items, no new upload POSTs, {server_log_count(r'POST /api/upload/check') - checks_before} check call(s)")
         # A re-sent file would land beside the original as <stem>_1.<ext>;
         # compare whole names, since the fixtures themselves end in _1/_2.
-        on_disk = {p.name for p in (tmp / "media" / "uploads").rglob("*") if p.is_file()}
+        # Uploads are filed into "<camera or phone>/<YYYY>/<MM-Mon>/", so
+        # look at the whole media root (minus the seed folder).
+        on_disk = {p.name for p in (tmp / "media").rglob("*") if p.is_file() and "Seed" not in p.parts}
         extra = sorted(on_disk - want - set(SHOTS))
         step("no duplicate files on disk", not extra, f"{len(on_disk)} files" + (f", extra: {extra}" if extra else ""))
 

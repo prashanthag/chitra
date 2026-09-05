@@ -232,6 +232,8 @@ fun ViewerDialog(
                         detail.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
                         add("Type" to "${detail.kind} · ${detail.ext.removePrefix(".").uppercase()}")
                         detail.album?.let { add("Folder" to it) }
+                        detail.sourceFolder?.let { add("Phone folder" to it) }
+                        detail.sourceDevice?.let { add("Backed up from" to it) }
                         detail.place?.let { add("Place" to it) }
                         if (detail.lat != null && detail.lng != null)
                             add("Location" to "%.5f, %.5f".format(detail.lat, detail.lng))

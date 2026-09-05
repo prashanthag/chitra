@@ -79,9 +79,18 @@ object Uploader {
         }
     }
 
-    /** Upload a single content:// item. Never throws; the result says what happened. */
-    fun uploadOne(context: Context, serverUrl: String, uri: Uri, name: String, size: Long, mime: String?): FileResult {
-        val first = uploadOnce(context, serverUrl, uri, name, size, mime)
+    /**
+     * Upload a single content:// item. Never throws; the result says what
+     * happened. `folder` is the phone folder the file lives in (Camera,
+     * WhatsApp Images...) and `device` this phone's name: the server files
+     * uploads by them, and uses the phone as the camera for EXIF-less files.
+     */
+    fun uploadOne(
+        context: Context, serverUrl: String, uri: Uri, name: String, size: Long, mime: String?,
+        folder: String? = null, device: String? = DeviceInfo.name(context), deviceMake: String? = DeviceInfo.make(),
+    ): FileResult {
+        val src = Source(folder, device, deviceMake)
+        val first = uploadOnce(context, serverUrl, uri, name, size, mime, src)
         // MediaStore's SIZE can lag behind the file (a still-being-written
         // camera burst, an edited-in-place image); OkHttp then aborts with a
         // length mismatch. Send again with chunked encoding, which doesn't
@@ -89,10 +98,12 @@ object Uploader {
         val lengthMismatch = !first.ok && size > 0 &&
             (first.error?.contains("expected", ignoreCase = true) == true ||
                 first.error?.contains("Content-Length", ignoreCase = true) == true)
-        return if (lengthMismatch) uploadOnce(context, serverUrl, uri, name, -1, mime) else first
+        return if (lengthMismatch) uploadOnce(context, serverUrl, uri, name, -1, mime, src) else first
     }
 
-    private fun uploadOnce(context: Context, serverUrl: String, uri: Uri, name: String, size: Long, mime: String?): FileResult {
+    private data class Source(val folder: String?, val device: String?, val deviceMake: String?)
+
+    private fun uploadOnce(context: Context, serverUrl: String, uri: Uri, name: String, size: Long, mime: String?, src: Source): FileResult {
         val resolver = context.contentResolver
         val body = object : RequestBody() {
             override fun contentType() = (mime ?: "application/octet-stream").toMediaTypeOrNull()
@@ -104,9 +115,12 @@ object Uploader {
                 input.use { sink.writeAll(it.source()) }
             }
         }
-        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("file", name, body)
-            .build()
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+            src.device?.let { addFormDataPart("device", it) }
+            src.deviceMake?.let { addFormDataPart("device_make", it) }
+            src.folder?.let { addFormDataPart("folder", it) }
+            addFormDataPart("file", name, body)
+        }.build()
         val req = Request.Builder().url(base(serverUrl) + "api/upload").post(multipart).build()
         return try {
             client.newCall(req).execute().use { resp ->

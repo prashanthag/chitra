@@ -27,6 +27,9 @@ data class MediaItem(
     @SerialName("edit_version") val editVersion: Int = 0,
     /** When the item entered the library (upload time), epoch seconds. */
     @SerialName("added_at") val addedAt: Double? = null,
+    /** Which phone and folder a backup upload came from (detail endpoint). */
+    @SerialName("source_device") val sourceDevice: String? = null,
+    @SerialName("source_folder") val sourceFolder: String? = null,
     /** Detail endpoint only: preformatted exposure settings (iso, aperture, shutter, focal_length, lens, exposure_bias, flash). */
     val exposure: Map<String, String>? = null,
     /** Detail endpoint only, videos: duration, codec, frame_rate, bitrate. */
@@ -116,7 +119,14 @@ data class MediaPage(
 data class Album(
     val album: String,
     val count: Int,
-)
+    /** Phone folder inside the uploads album (Camera, WhatsApp Images...), from the backup app. */
+    val folder: String? = null,
+    val device: String? = null,
+    val cover: String? = null,
+) {
+    val label: String get() = folder ?: album
+    val key: String get() = if (folder != null) "$album/$folder" else album
+}
 
 @Serializable
 data class Cluster(

@@ -155,6 +155,176 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class UploadSourceTests(unittest.TestCase):
+    """Backup uploads carry the phone's device name and source folder."""
+
+    def _jpeg(self, color, exif=None):
+        buf = io.BytesIO()
+        im = Image.new("RGB", (48, 48), color)
+        im.save(buf, "JPEG", **({"exif": exif.tobytes()} if exif else {}))
+        buf.seek(0)
+        return buf
+
+    def _upload(self, buf, name, **fields):
+        r = client.post("/api/upload", data={"file": (buf, name), **fields}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        self.assertTrue(item["indexed"], item)
+        self._ids.append(item["id"])
+        return item
+
+    def setUp(self):
+        self._ids = []
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._ids:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.close()
+        chitra.scan_once()
+
+    def test_folder_and_device_are_stored_and_browsable(self):
+        a = self._upload(self._jpeg((10, 20, 30)), "wa_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="WhatsApp Images")
+        b = self._upload(self._jpeg((30, 20, 10)), "cam_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Camera")
+        d = client.get(f"/api/media/{a['id']}").get_json()
+        self.assertEqual((d["source_device"], d["source_folder"]), ("Galaxy Z Fold6", "WhatsApp Images"))
+        # Filter inside the uploads album by phone folder.
+        _, names = totals(album="uploads", folder="WhatsApp Images")
+        self.assertEqual(names, ["wa_1.jpg"])
+        # Phone folders appear as albums, with covers and counts.
+        albums = client.get("/api/albums").get_json()
+        pf = {x["folder"]: x for x in albums if x.get("folder")}
+        self.assertEqual(pf["WhatsApp Images"]["count"], 1)
+        self.assertEqual(pf["WhatsApp Images"]["cover"], a["id"])
+        self.assertEqual(pf["Camera"]["device"], "Galaxy Z Fold6")
+
+    def test_exif_less_upload_is_attributed_to_the_phone(self):
+        # No camera EXIF (a download): the phone becomes the camera.
+        a = self._upload(self._jpeg((1, 1, 1)), "dl_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Download")
+        d = client.get(f"/api/media/{a['id']}").get_json()
+        self.assertEqual((d["camera_make"], d["camera_model"]), ("samsung", "Galaxy Z Fold6"))
+        # Real camera EXIF wins over the phone name.
+        exif = Image.Exif()
+        exif[271], exif[272] = "Canon", "EOS R6"
+        b = self._upload(self._jpeg((2, 2, 2), exif), "canon_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Download")
+        d = client.get(f"/api/media/{b['id']}").get_json()
+        self.assertEqual((d["camera_make"], d["camera_model"]), ("Canon", "EOS R6"))
+        # Web drag-and-drop sends nothing: no camera, no folder.
+        c = self._upload(self._jpeg((3, 3, 3)), "web_1.jpg")
+        d = client.get(f"/api/media/{c['id']}").get_json()
+        self.assertIsNone(d["camera_model"])
+        self.assertIsNone(d["source_folder"])
+
+
+class UploadFilingTests(unittest.TestCase):
+    """Uploads with a known camera go into "<camera>/<YYYY>/<MM-Mon>/" like
+    the rest of the library; unknown ones stay in uploads/."""
+
+    def _jpeg(self, make=None, model=None, when=None, color=(9, 9, 9)):
+        buf = io.BytesIO()
+        exif = Image.Exif()
+        if make:
+            exif[271] = make
+        if model:
+            exif[272] = model
+        if when:
+            exif[306] = when
+        Image.new("RGB", (40, 40), color).save(buf, "JPEG", exif=exif.tobytes())
+        buf.seek(0)
+        return buf
+
+    def setUp(self):
+        self._ids = []
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._ids:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.execute("DELETE FROM favorites WHERE media_id IN (%s)" % ",".join("?" * len(self._ids)), self._ids) if self._ids else None
+        conn.commit()
+        conn.close()
+        chitra.scan_once()
+
+    def _upload(self, buf, name, **fields):
+        r = client.post("/api/upload", data={"file": (buf, name), **fields}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        self._ids.append(item["id"])
+        return client.get(f"/api/media/{item['id']}").get_json()
+
+    def test_camera_dir_names_match_the_library(self):
+        self.assertEqual(chitra.camera_dir_name("samsung", "Galaxy Z Fold6"), "samsung Galaxy Z Fold6")
+        self.assertEqual(chitra.camera_dir_name("Canon", "Canon EOS 5D Mark IV"), "Canon EOS 5D Mark IV")
+        self.assertEqual(chitra.camera_dir_name("Apple", "iPhone 13 mini"), "Apple iPhone 13 mini")
+        self.assertEqual(chitra.camera_dir_name(None, "NIKON D90"), "NIKON D90")
+        self.assertIsNone(chitra.camera_dir_name(None, None))
+        self.assertEqual(chitra.camera_dir_name("samsung", "\x02"), "samsung")   # junk model
+        self.assertEqual(chitra.organized_dir("samsung", "Galaxy Z Fold6", 1715763600.0), "samsung Galaxy Z Fold6/2024/05-May")
+
+    def test_exif_camera_upload_is_filed_by_camera_year_month(self):
+        d = self._upload(self._jpeg("samsung", "Galaxy Z Fold6", "2024:05:15 10:00:00"), "filed.jpg",
+                         device="Galaxy Z Fold6", device_make="samsung", folder="Camera")
+        rel = os.path.relpath(d["path"], MEDIA).split(os.sep)
+        self.assertEqual(rel, ["samsung Galaxy Z Fold6", "2024", "05-May", "filed.jpg"])
+        self.assertEqual(d["album"], "samsung Galaxy Z Fold6")
+        self.assertEqual(d["uploaded"], 1)
+        # In the plain feed (it is a library photo now) and in the uploads feed.
+        _, plain = totals()
+        self.assertIn("filed.jpg", plain)
+        _, ups = totals(album="uploads")
+        self.assertIn("filed.jpg", ups)
+
+    def test_phone_attributed_upload_is_filed_under_the_phone(self):
+        d = self._upload(self._jpeg(when="2023:01:02 09:00:00"), "wa.jpg",
+                         device="Galaxy Z Fold6", device_make="samsung", folder="WhatsApp Images")
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep)[:3], ["samsung Galaxy Z Fold6", "2023", "01-Jan"])
+        _, names = totals(album="uploads", folder="WhatsApp Images")
+        self.assertIn("wa.jpg", names)
+
+    def test_unknown_upload_stays_in_uploads_folder(self):
+        d = self._upload(self._jpeg(), "mystery.jpg")
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep)[0], "uploads")
+        self.assertEqual(d["album"], "uploads")
+        _, plain = totals()
+        self.assertNotIn("mystery.jpg", plain)
+
+    def test_organize_moves_legacy_uploads_and_keeps_ids(self):
+        # A file that landed in uploads/ before filing existed, with camera EXIF.
+        legacy_dir = os.path.join(MEDIA, "uploads", "2026-08-08")
+        os.makedirs(legacy_dir, exist_ok=True)
+        path = os.path.join(legacy_dir, "legacy.jpg")
+        with open(path, "wb") as f:
+            f.write(self._jpeg("Apple", "iPhone 13 mini", "2022:07:04 12:00:00").getvalue())
+        chitra.scan_once()
+        mid = id_of("legacy.jpg")
+        self._ids.append(mid)
+        client.post(f"/api/media/{mid}/favorite")
+        # Keep the shared fixture (up.jpg, camera TestFold) out of the pass.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET camera_model = NULL WHERE name='up.jpg'")
+        conn.commit()
+        conn.close()
+        self.addCleanup(lambda: (lambda c: (c.execute("UPDATE media SET camera_model='TestFold' WHERE name='up.jpg'"), c.commit(), c.close()))(chitra.sqlite3.connect(chitra.DB_PATH)))
+        chitra.organize_uploads()
+        d = client.get(f"/api/media/{mid}").get_json()
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep), ["Apple iPhone 13 mini", "2022", "07-Jul", "legacy.jpg"])
+        self.assertTrue(os.path.exists(d["path"]))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual((d["album"], d["uploaded"]), ("Apple iPhone 13 mini", 1))
+        _, favs = totals(favorites=1)
+        self.assertIn("legacy.jpg", favs)
+        # A rescan sees the moved file as the same item: no new row, same id.
+        chitra.scan_once()
+        self.assertEqual(id_of("legacy.jpg"), mid)
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM media WHERE name='legacy.jpg'").fetchone()[0], 1)
+        conn.close()
+
+
 class VideoPlaybackTests(unittest.TestCase):
     """/play sends a client to the original only when it can carry it."""
 
