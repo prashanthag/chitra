@@ -353,8 +353,8 @@ def main():
              f"{len(uploads())} on server, upload POSTs unchanged")
 
         # 5) Settings screen renders (best effort UI navigation)
-        launch(filter="all")
-        time.sleep(3)
+        launch(fresh=True, filter="all")   # cold start: the home screen, where the Settings icon lives
+        time.sleep(4)
         if tap_content_desc("Settings"):
             time.sleep(4)
             screenshot("app-settings.png")
@@ -370,7 +370,11 @@ def main():
         step("album created via API", alb["count"] == 2 and alb["cover"] in cam_ids, f"id {alb['id']}")
         launch(fresh=True, filter="all")
         time.sleep(4)
-        if tap_content_desc("Albums"):
+        # Albums live under the Collections tab (bottom navigation), behind
+        # the "Albums / See all" header.
+        # Bottom-navigation items expose their label as text (Compose merges
+        # the icon's description away); the Albums header carries a description.
+        if tap_text("Collections") and (time.sleep(3) or True) and tap_content_desc("Albums"):
             time.sleep(4)
             texts = ui_texts()
             step("albums screen lists the album", "My albums" in texts and "E2E album" in texts,
@@ -385,7 +389,7 @@ def main():
             else:
                 step("album opens with its two items", False, "album tile not found via uiautomator")
         else:
-            step("albums screen lists the album", False, "Albums button not found via uiautomator")
+            step("albums screen lists the album", False, "Collections tab / Albums header not found via uiautomator")
         # The public link exposes exactly the members and nothing else.
         tok = http(f"/api/user_albums/{alb['id']}/share", "POST")["token"]
         other = [i["id"] for i in uploads() if i["id"] not in cam_ids][0]
