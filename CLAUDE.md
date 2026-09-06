@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-Two-component monorepo for a self-hosted Google Photos clone:
+Three-component monorepo for a self-hosted Google Photos clone:
 
 - `server/` — Python/Flask media server. Single big module `app.py` plus three CLI scripts (`clip_indexer.py`, `face_indexer.py`, `recluster.py`, `gps_backfill.py`) that share its SQLite index.
 - `android/` — Kotlin + Jetpack Compose client, package `com.buildapp.photos`.
+- `ios/` — SwiftUI client, same bundle id `com.buildapp.photos`, feature-matched to the Android one. The Xcode project is generated from `ios/project.yml` by XcodeGen and is gitignored.
 
 Note: `server/bin/`, `server/lib/`, `server/lib64`, `server/include/`, `server/pyvenv.cfg` are gitignored stray venv artifacts. The real venv lives in `server/.venv/`.
 
@@ -43,7 +44,21 @@ cd android
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-No automated test suites are wired up.
+### iOS
+
+```bash
+cd ios
+xcodegen generate                                      # brew install xcodegen
+xcodebuild -project Chitra.xcodeproj -target Chitra -sdk iphonesimulator \
+  -arch arm64 -configuration Debug CODE_SIGNING_ALLOWED=NO build
+xcrun simctl install booted build/Debug-iphonesimulator/Chitra.app
+xcrun simctl launch booted com.buildapp.photos
+```
+
+Unit tests live in `ios/ChitraTests/`; `xcodebuild test` needs a simulator
+runtime matching the SDK. When there isn't one, `ios/Tools/logic-check.sh`
+runs the same assertions as a plain macOS binary. See `ios/README.md` for the
+Android↔iOS mapping, the debug launch hooks and the app-icon caveat.
 
 ## Architecture
 

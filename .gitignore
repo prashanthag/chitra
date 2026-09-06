@@ -32,6 +32,13 @@ android/.idea/
 android/captures/
 *.iml
 
+# iOS / Xcode (Chitra.xcodeproj is generated from ios/project.yml)
+ios/build/
+ios/Chitra.xcodeproj/
+DerivedData/
+*.xcuserdatad
+xcuserdata/
+
 # OS / editor
 .DS_Store
 .vscode/
