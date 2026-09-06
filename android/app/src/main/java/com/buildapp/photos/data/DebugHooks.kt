@@ -26,6 +26,15 @@ object DebugHooks {
         if (intent == null || !isDebuggable(ctx)) return
         val settings = SettingsRepository(ctx)
         intent.getStringExtra("server_url")?.let { settings.setServerUrl(it) }
+        // Sign in (accounts on the server): login_name + login_password.
+        intent.getStringExtra("login_name")?.let { name ->
+            val pw = intent.getStringExtra("login_password") ?: ""
+            runCatching {
+                val r = com.buildapp.photos.api.PhotoApi.create(settings.serverUrl.first()).login(
+                    com.buildapp.photos.api.LoginBody(name, pw, device = "e2e"))
+                settings.setSession(r.token, r.user.name)
+            }
+        }
         intent.getStringExtra("filter")?.let { initialFilter = it }
         if (intent.hasExtra("backup_videos")) settings.setBackupVideos(intent.getBooleanExtra("backup_videos", true))
         if (intent.hasExtra("backup_wifi_only")) settings.setBackupWifiOnly(intent.getBooleanExtra("backup_wifi_only", true))

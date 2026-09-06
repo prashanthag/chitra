@@ -77,6 +77,8 @@ data class UserAlbum(
     @SerialName("share_token") val shareToken: String? = null,
     /** Only when listed with ?media_id=: whether that item is in the album. */
     val contains: Boolean? = null,
+    /** In the owner's Locked folder (visible only to them, while unlocked). */
+    val locked: Boolean = false,
 )
 
 @Serializable
@@ -87,6 +89,32 @@ data class AlbumShareResp(val ok: Boolean, val token: String, val url: String)
 
 @Serializable
 data class OkResp(val ok: Boolean)
+
+// Accounts
+@Serializable
+data class User(val id: Int, val name: String, val role: String)
+
+@Serializable
+data class AuthState(
+    @SerialName("auth_required") val authRequired: Boolean,
+    val user: User? = null,
+    val unlocked: Boolean = false,
+)
+
+@Serializable
+data class LoginBody(val name: String, val password: String, val device: String = "android")
+
+@Serializable
+data class LoginResp(val ok: Boolean, val token: String, val user: User)
+
+@Serializable
+data class NewUserBody(val name: String, val password: String, val role: String = "member")
+
+@Serializable
+data class PasswordBody(val password: String)
+
+@Serializable
+data class LockResp(val ok: Boolean, val locked: Int = 0, val unlocked: Int = 0)
 
 @Serializable
 data class IdsBody(val ids: List<String>)

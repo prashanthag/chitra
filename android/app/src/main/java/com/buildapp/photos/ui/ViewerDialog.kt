@@ -16,6 +16,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddToPhotos
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -67,6 +69,9 @@ fun ViewerDialog(
     onRotate: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
     onAddToAlbum: ((MediaItem) -> Unit)? = null,
+    /** Lock (or, in the Locked folder, unlock) the item; null hides the button. */
+    onLock: ((MediaItem) -> Unit)? = null,
+    lockedView: Boolean = false,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -119,6 +124,12 @@ fun ViewerDialog(
                 if (onAddToAlbum != null && item.trashedAt == null) {
                     IconButton(onClick = { onAddToAlbum(item) }) {
                         Icon(Icons.Default.AddToPhotos, contentDescription = "Add to album", tint = Color.White)
+                    }
+                }
+                if (onLock != null && item.trashedAt == null) {
+                    IconButton(onClick = { onLock(item); onDismiss() }) {
+                        Icon(if (lockedView) Icons.Default.LockOpen else Icons.Default.Lock,
+                            contentDescription = if (lockedView) "Unlock" else "Move to Locked folder", tint = Color.White)
                     }
                 }
                 IconButton(onClick = {
@@ -255,7 +266,13 @@ fun ViewerDialog(
 private fun VideoPlayer(url: String) {
     val context = LocalContext.current
     val exoPlayer = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
+        // The session header must ride along on video requests too.
+        val http = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(com.buildapp.photos.api.Auth.headers())
+            .setAllowCrossProtocolRedirects(true)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(http))
+            .build().apply {
             setMediaItem(ExoMediaItem.fromUri(url))
             prepare()
             playWhenReady = true

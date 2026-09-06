@@ -86,6 +86,14 @@ Soft-delete: `media.trashed_at` (epoch) and `media.archived` (int). The `auto_pu
 
 `_load_clip_index` lazy-loads the model + the full embedding matrix into process memory on first `/api/search_semantic` request — ranking is a single `(N,512)·(512,)` matmul in NumPy. `/api/memories` re-uses the same loaded matrix to zero-shot-label each year's group of "On this day" photos against `MEMORY_LABELS`. If the embedding column is missing, both endpoints degrade gracefully (search returns 503, memories returns "Memories" title).
 
+### Accounts and the Locked folder
+
+The server is open (no login) until the first user is created via `POST /api/users` (that user becomes `admin`). From then on every `/api` call except `/api/health`, `/api/login`, `/api/auth/state` and the public `/s/` share routes needs a session: `Authorization: Bearer <token>` from `POST /api/login`, or the `chitra_session` cookie the login response sets (browsers). Admins manage users (`/api/users`); members do everything else.
+
+Each user has a Locked folder: `POST /api/media/lock {ids}` / `POST /api/user_albums/<id>/lock` sets `media.private_to` / `albums.private_to` to the caller. Locked items are excluded from every listing (`visible_clause()`, plus a guard in the auth hook that 404s per-item routes) and from public shares; the owner sees them only in `GET /api/media?locked=1`, after `POST /api/locked/unlock {password}` opened the session for `UNLOCK_MINUTES` (15). Any new query that lists media must append `private_to IS NULL`.
+
+Clients: the web app and Android are wired (sign-in prompt on 401, Locked view, lock/unlock actions, account management in Settings). The iOS client under `ios/` predates this and needs the same: send the bearer token, handle 401 with a sign-in screen, add the Locked folder and lock actions.
+
 ### Sharing
 
 `POST /api/media/{id}/share` mints a `secrets.token_urlsafe(12)` stored on `media.share_token`. `/s/{token}` and `/s/{token}/file` are public, unauthenticated viewer routes — keep this in mind when changing share-related code.

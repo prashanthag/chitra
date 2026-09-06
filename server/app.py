@@ -166,6 +166,25 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_album_media_media ON album_media(media_id);
         CREATE INDEX IF NOT EXISTS idx_albums_share ON albums(share_token);
 
+        -- Accounts. While this table is empty the server is open, as it
+        -- always was; the first user created becomes admin and from then
+        -- on every /api call needs a login.
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',   -- 'admin' | 'member'
+            created_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at REAL NOT NULL,
+            last_seen REAL NOT NULL,
+            unlocked_until REAL NOT NULL DEFAULT 0,  -- Locked folder open until
+            device TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS scan_state (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -202,6 +221,11 @@ def init_db() -> None:
     # "<Make Model>/<YYYY>/<MM-Mon>" scheme like everything else; the
     # "Recently uploaded" feed is this flag ordered by added_at.
     _add_column_if_missing(conn, "media", "uploaded INTEGER NOT NULL DEFAULT 0")
+    # Locked folder: an item private to one user is left out of every
+    # listing and served only to that user while their session is unlocked.
+    _add_column_if_missing(conn, "media", "private_to INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_private ON media(private_to)")
+    _add_column_if_missing(conn, "albums", "private_to INTEGER")
     conn.execute("UPDATE media SET uploaded = 1 WHERE uploaded = 0 AND (album = 'uploads' OR source_device IS NOT NULL)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_uploaded ON media(uploaded, trashed_at, added_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_source ON media(uploaded, source_folder)")
@@ -959,6 +983,300 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024  # 8 GiB upload cap
 
 
+# ---------- Accounts, sessions, Locked folder ----------
+
+SESSION_COOKIE = "chitra_session"
+UNLOCK_MINUTES = int(os.environ.get("UNLOCK_MINUTES", "15"))
+# Paths that work without a login even once accounts exist.
+_OPEN_PREFIXES = ("/s/", "/static/")
+_OPEN_PATHS = {"/", "/api/health", "/api/login", "/api/auth/state"}
+
+
+def _hash_password(pw: str) -> str:
+    import secrets
+    salt = secrets.token_bytes(16)
+    h = hashlib.scrypt(pw.encode(), salt=salt, n=2 ** 14, r=8, p=1)
+    return f"scrypt${salt.hex()}${h.hex()}"
+
+
+def _check_password(pw: str, stored: str) -> bool:
+    try:
+        _, salt, h = stored.split("$")
+        got = hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=2 ** 14, r=8, p=1)
+        import hmac
+        return hmac.compare_digest(got.hex(), h)
+    except Exception:
+        return False
+
+
+def auth_required() -> bool:
+    return db().execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+
+
+def current_user():
+    return getattr(g, "user", None)
+
+
+def session_unlocked() -> bool:
+    s = getattr(g, "session", None)
+    return bool(s and s["unlocked_until"] > time.time())
+
+
+def _session_token() -> str | None:
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return request.cookies.get(SESSION_COOKIE) or request.args.get("session") or None
+
+
+@app.before_request
+def _auth():
+    g.user = None
+    g.session = None
+    tok = _session_token()
+    if tok:
+        s = db().execute("SELECT * FROM sessions WHERE token = ?", (tok,)).fetchone()
+        if s:
+            u = db().execute("SELECT id, name, role FROM users WHERE id = ?", (s["user_id"],)).fetchone()
+            if u:
+                g.user, g.session = u, s
+                if time.time() - s["last_seen"] > 300:
+                    db().execute("UPDATE sessions SET last_seen = ? WHERE token = ?", (time.time(), tok))
+                    db().commit()
+    p = request.path
+    if p in _OPEN_PATHS or p.startswith(_OPEN_PREFIXES) or request.method == "OPTIONS":
+        return None
+    # Bootstrap: creating the very first user needs no login.
+    if p == "/api/users" and request.method == "POST" and not auth_required():
+        return None
+    if g.user is None and auth_required():
+        return jsonify({"ok": False, "error": "login required"}), 401
+    # Every per-item route (thumb, preview, play, full, stream, info, edit,
+    # rotate, favorite, trash, share...) 404s for a locked item unless it is
+    # mine and my session is unlocked.
+    m = re.match(r"^/api/media/([0-9a-f]{16})(?:/|$)", p)
+    if m:
+        _visible_or_404(m.group(1))
+    return None
+
+
+def _require_admin():
+    u = current_user()
+    if not u or u["role"] != "admin":
+        abort(403, "admin only")
+
+
+def visible_clause(alias: str = "m") -> str:
+    """SQL condition every listing appends: locked items never show up in
+    feeds, search, albums, people, places or memories. The Locked folder
+    view (list_media?locked=1) is the one place that lists them."""
+    return f"{alias}.private_to IS NULL"
+
+
+def _can_see(row) -> bool:
+    """Single-item rule: public, or mine while my session is unlocked."""
+    pt = row["private_to"] if "private_to" in row.keys() else None
+    if pt is None:
+        return True
+    u = current_user()
+    return bool(u and u["id"] == pt and session_unlocked())
+
+
+def _visible_or_404(mid: str):
+    r = db().execute("SELECT private_to FROM media WHERE id = ?", (mid,)).fetchone()
+    if not r or not _can_see(r):
+        abort(404)
+
+
+@app.get("/api/auth/state")
+def auth_state():
+    u = current_user()
+    return jsonify({
+        "auth_required": auth_required(),
+        "user": dict(u) if u else None,
+        "unlocked": session_unlocked(),
+        "unlock_minutes": UNLOCK_MINUTES,
+    })
+
+
+@app.post("/api/login")
+def login():
+    import secrets
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    pw = str(body.get("password") or "")
+    u = db().execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
+    if not u or not _check_password(pw, u["password_hash"]):
+        return jsonify({"ok": False, "error": "wrong name or password"}), 401
+    tok = secrets.token_urlsafe(32)
+    now = time.time()
+    db().execute("INSERT INTO sessions (token, user_id, created_at, last_seen, device) VALUES (?,?,?,?,?)",
+                 (tok, u["id"], now, now, str(body.get("device") or request.headers.get("User-Agent", ""))[:120]))
+    db().commit()
+    resp = jsonify({"ok": True, "token": tok, "user": {"id": u["id"], "name": u["name"], "role": u["role"]}})
+    # Browsers: the cookie lets <img>/<video> requests authenticate too.
+    resp.set_cookie(SESSION_COOKIE, tok, max_age=365 * 24 * 3600, samesite="Lax", path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    tok = _session_token()
+    if tok:
+        db().execute("DELETE FROM sessions WHERE token = ?", (tok,))
+        db().commit()
+    resp = jsonify({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/users")
+def list_users():
+    _require_admin()
+    rows = db().execute("SELECT id, name, role, created_at FROM users ORDER BY id").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/users")
+def create_user():
+    """Admin creates users. With no users yet, whoever calls this creates
+    the first account, which is the admin."""
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    pw = str(body.get("password") or "")
+    role = "member" if body.get("role") == "member" else "admin"
+    bootstrap = not auth_required()
+    if not bootstrap:
+        _require_admin()
+    else:
+        role = "admin"
+    if not name or len(pw) < 4:
+        abort(400, "name and a password of at least 4 characters required")
+    try:
+        cur = db().execute("INSERT INTO users (name, password_hash, role, created_at) VALUES (?,?,?,?)",
+                           (name, _hash_password(pw), role, time.time()))
+    except sqlite3.IntegrityError:
+        abort(409, "name taken")
+    db().commit()
+    return jsonify({"ok": True, "user": {"id": cur.lastrowid, "name": name, "role": role}})
+
+
+@app.delete("/api/users/<int:uid>")
+def delete_user(uid: int):
+    _require_admin()
+    if uid == current_user()["id"]:
+        abort(400, "cannot delete yourself")
+    # Their locked items become visible again rather than orphaned forever.
+    db().execute("UPDATE media SET private_to = NULL WHERE private_to = ?", (uid,))
+    db().execute("UPDATE albums SET private_to = NULL WHERE private_to = ?", (uid,))
+    db().execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+    n = db().execute("DELETE FROM users WHERE id = ?", (uid,)).rowcount
+    db().commit()
+    if not n:
+        abort(404)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/users/me/password")
+def change_password():
+    u = current_user()
+    if not u:
+        abort(401)
+    body = request.get_json(silent=True) or {}
+    row = db().execute("SELECT password_hash FROM users WHERE id = ?", (u["id"],)).fetchone()
+    if not _check_password(str(body.get("old") or ""), row["password_hash"]):
+        return jsonify({"ok": False, "error": "wrong password"}), 403
+    new = str(body.get("new") or "")
+    if len(new) < 4:
+        abort(400, "password of at least 4 characters required")
+    db().execute("UPDATE users SET password_hash = ? WHERE id = ?", (_hash_password(new), u["id"]))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/locked/unlock")
+def locked_unlock():
+    """Open the Locked folder for this session: the account password again,
+    like Google Photos asks for device auth."""
+    u = current_user()
+    if not u:
+        abort(401)
+    body = request.get_json(silent=True) or {}
+    row = db().execute("SELECT password_hash FROM users WHERE id = ?", (u["id"],)).fetchone()
+    if not _check_password(str(body.get("password") or ""), row["password_hash"]):
+        return jsonify({"ok": False, "error": "wrong password"}), 403
+    until = time.time() + UNLOCK_MINUTES * 60
+    db().execute("UPDATE sessions SET unlocked_until = ? WHERE token = ?", (until, g.session["token"]))
+    db().commit()
+    return jsonify({"ok": True, "unlocked_until": until})
+
+
+@app.post("/api/locked/lock")
+def locked_lock():
+    if g.session:
+        db().execute("UPDATE sessions SET unlocked_until = 0 WHERE token = ?", (g.session["token"],))
+        db().commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/media/lock")
+def lock_media():
+    """Move items into my Locked folder. They vanish from every view and
+    every other account; public share links on them are revoked."""
+    u = current_user()
+    if not u:
+        abort(401)
+    ids = _batch_ids()
+    cur = db().executemany(
+        "UPDATE media SET private_to = ?, share_token = NULL WHERE id = ? AND private_to IS NULL",
+        [(u["id"], i) for i in ids])
+    db().commit()
+    return jsonify({"ok": True, "locked": cur.rowcount})
+
+
+@app.post("/api/media/unlock")
+def unlock_media():
+    u = current_user()
+    if not u or not session_unlocked():
+        abort(401)
+    ids = _batch_ids()
+    cur = db().executemany(
+        "UPDATE media SET private_to = NULL WHERE id = ? AND private_to = ?",
+        [(i, u["id"]) for i in ids])
+    db().commit()
+    return jsonify({"ok": True, "unlocked": cur.rowcount})
+
+
+@app.post("/api/user_albums/<int:aid>/lock")
+def lock_album(aid: int):
+    u = current_user()
+    if not u:
+        abort(401)
+    if not db().execute("SELECT 1 FROM albums WHERE id = ? AND private_to IS NULL", (aid,)).fetchone():
+        abort(404)
+    db().execute("UPDATE albums SET private_to = ?, share_token = NULL WHERE id = ?", (u["id"], aid))
+    db().execute("""UPDATE media SET private_to = ?, share_token = NULL
+                    WHERE private_to IS NULL AND id IN (SELECT media_id FROM album_media WHERE album_id = ?)""",
+                 (u["id"], aid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/user_albums/<int:aid>/unlock")
+def unlock_album(aid: int):
+    u = current_user()
+    if not u or not session_unlocked():
+        abort(401)
+    if not db().execute("SELECT 1 FROM albums WHERE id = ? AND private_to = ?", (aid, u["id"])).fetchone():
+        abort(404)
+    db().execute("UPDATE albums SET private_to = NULL WHERE id = ?", (aid,))
+    db().execute("""UPDATE media SET private_to = NULL
+                    WHERE private_to = ? AND id IN (SELECT media_id FROM album_media WHERE album_id = ?)""",
+                 (u["id"], aid))
+    db().commit()
+    return jsonify({"ok": True})
+
+
 @app.before_request
 def _readonly_guard():
     """Safe mode: reversible and additive actions pass; nothing that would
@@ -973,7 +1291,8 @@ def _readonly_guard():
         or request.path.endswith(("/favorite", "/trash", "/restore", "/name", "/merge"))
         # Face/person labels and manual albums describe the library rather
         # than the files in it: neither writes a byte to any media.
-        or request.path.startswith(("/api/persons", "/api/user_albums"))
+        or request.path.startswith(("/api/persons", "/api/user_albums", "/api/users", "/api/login",
+                                    "/api/logout", "/api/locked", "/api/media/lock", "/api/media/unlock"))
     )
     if not allowed:
         return jsonify({"ok": False, "error": "read-only library"}), 403
@@ -1072,6 +1391,16 @@ def list_media():
     )
     where: list[str] = []
     args: list = []
+    # ?locked=1 lists my Locked folder (session must be unlocked); every
+    # other listing leaves locked items out.
+    if request.args.get("locked") in ("1", "true"):
+        u = current_user()
+        if not u or not session_unlocked():
+            abort(401, "unlock the Locked folder first")
+        where.append("m.private_to = ?")
+        args.append(u["id"])
+    else:
+        where.append(visible_clause())
     if trashed_only:
         where.append("m.trashed_at IS NOT NULL")
     elif archived_only:
@@ -1220,7 +1549,7 @@ def memories():
                   strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS md
            FROM media
            WHERE strftime('%m-%d', datetime(COALESCE(taken_at, mtime), 'unixepoch')) = ?
-             AND trashed_at IS NULL
+             AND trashed_at IS NULL AND private_to IS NULL
            ORDER BY taken_at DESC""",
         (f"{target_md[0]:02d}-{target_md[1]:02d}",),
     ).fetchall()
@@ -1315,7 +1644,7 @@ def search_semantic():
         f"m.trashed_at, m.archived "
         f"FROM media m LEFT JOIN favorites f ON f.media_id = m.id "
         f"WHERE m.id IN ({placeholders}) "
-        f"AND m.album != 'uploads' AND m.taken_at IS NOT NULL",
+        f"AND m.album != 'uploads' AND m.taken_at IS NOT NULL AND m.private_to IS NULL",
         top_ids,
     ).fetchall()
     by_id = {r["id"]: dict(r) for r in rows}
@@ -1331,6 +1660,7 @@ def timeline():
                   strftime('%m', datetime(COALESCE(taken_at, mtime), 'unixepoch')) AS m,
                   COUNT(*) AS n
            FROM media
+           WHERE private_to IS NULL
            GROUP BY y, m
            ORDER BY y DESC, m DESC"""
     ).fetchall()
@@ -1698,7 +2028,7 @@ def list_locations():
     rows = db().execute(
         """SELECT id, name, kind, lat, lng, taken_at, album
            FROM media
-           WHERE lat IS NOT NULL AND lng IS NOT NULL
+           WHERE lat IS NOT NULL AND lng IS NOT NULL AND private_to IS NULL
              AND trashed_at IS NULL"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -1715,7 +2045,7 @@ def media_near():
     rows = db().execute(
         """SELECT id,name,kind,ext,mime,size,taken_at,width,height,album,lat,lng,edit_version
            FROM media
-           WHERE trashed_at IS NULL
+           WHERE trashed_at IS NULL AND private_to IS NULL
              AND lat BETWEEN ? AND ?
              AND lng BETWEEN ? AND ?""",
         (lat - deg, lat + deg, lng - deg, lng + deg),
@@ -1749,9 +2079,11 @@ def create_share(mid: str):
     """Generate (or return existing) public share token for a media item."""
     import secrets
 
-    r = db().execute("SELECT share_token FROM media WHERE id = ?", (mid,)).fetchone()
+    r = db().execute("SELECT share_token, private_to FROM media WHERE id = ?", (mid,)).fetchone()
     if not r:
         abort(404)
+    if r["private_to"] is not None:
+        abort(403, "a locked item cannot be shared")
     token = r["share_token"] or secrets.token_urlsafe(12)
     if not r["share_token"]:
         db().execute("UPDATE media SET share_token = ? WHERE id = ?", (token, mid))
@@ -1770,7 +2102,7 @@ def revoke_share(mid: str):
 def share_view(token: str):
     """Public viewer for a shared media item — no auth, by token only."""
     r = db().execute(
-        "SELECT id, name, kind, ext, mime FROM media WHERE share_token = ?",
+        "SELECT id, name, kind, ext, mime FROM media WHERE share_token = ? AND private_to IS NULL",
         (token,),
     ).fetchone()
     if not r:
@@ -1793,7 +2125,7 @@ img,video{{max-width:100vw;max-height:100vh;object-fit:contain}}</style>
 @app.get("/s/<token>/file")
 def share_file(token: str):
     r = db().execute(
-        "SELECT id, path, kind, ext, mime FROM media WHERE share_token = ?",
+        "SELECT id, path, kind, ext, mime FROM media WHERE share_token = ? AND private_to IS NULL",
         (token,),
     ).fetchone()
     if not r:
@@ -1814,7 +2146,7 @@ def share_file(token: str):
 
 
 def _shared_album(token: str) -> sqlite3.Row:
-    r = db().execute("SELECT id, name FROM albums WHERE share_token = ?", (token,)).fetchone()
+    r = db().execute("SELECT id, name FROM albums WHERE share_token = ? AND private_to IS NULL", (token,)).fetchone()
     if not r:
         abort(404)
     return r
@@ -1826,7 +2158,7 @@ def _shared_album_item(token: str, mid: str) -> sqlite3.Row:
     a = _shared_album(token)
     r = db().execute(
         """SELECT m.* FROM media m JOIN album_media am ON am.media_id = m.id
-           WHERE am.album_id = ? AND m.id = ? AND m.trashed_at IS NULL""",
+           WHERE am.album_id = ? AND m.id = ? AND m.trashed_at IS NULL AND m.private_to IS NULL""",
         (a["id"], mid)).fetchone()
     if not r:
         abort(404)
@@ -1839,7 +2171,7 @@ def share_album_view(token: str):
     a = _shared_album(token)
     rows = db().execute(
         """SELECT m.id, m.name, m.kind FROM album_media am JOIN media m ON m.id = am.media_id
-           WHERE am.album_id = ? AND m.trashed_at IS NULL
+           WHERE am.album_id = ? AND m.trashed_at IS NULL AND m.private_to IS NULL
            ORDER BY COALESCE(m.taken_at, m.mtime) DESC""", (a["id"],)).fetchall()
     tiles = "".join(
         f'<a href="/s/a/{token}/file/{r["id"]}" target="_blank" title="{escape(r["name"])}">'
@@ -2032,7 +2364,7 @@ def list_albums():
                     ROW_NUMBER() OVER (PARTITION BY album
                                        ORDER BY COALESCE(taken_at, mtime) DESC) AS rn,
                     COUNT(*) OVER (PARTITION BY album) AS count
-             FROM media WHERE trashed_at IS NULL)
+             FROM media WHERE trashed_at IS NULL AND private_to IS NULL)
            SELECT album, count, id AS cover FROM t WHERE rn = 1 ORDER BY album"""
     ).fetchall()
     out = [dict(r) for r in rows]
@@ -2046,7 +2378,7 @@ def list_albums():
                                        ORDER BY COALESCE(taken_at, mtime) DESC) AS rn,
                     COUNT(*) OVER (PARTITION BY source_folder) AS count
              FROM media
-             WHERE uploaded = 1 AND source_folder IS NOT NULL AND trashed_at IS NULL)
+             WHERE uploaded = 1 AND source_folder IS NOT NULL AND trashed_at IS NULL AND private_to IS NULL)
            SELECT source_folder AS folder, source_device AS device, count, id AS cover
            FROM t WHERE rn = 1 ORDER BY count DESC"""
     ).fetchall()
@@ -2065,26 +2397,36 @@ _ALBUM_ITEM_COLS = (
 )
 
 
+def _album_member_clause(private_to) -> str:
+    """Which members an album shows: public ones, plus the owner's locked
+    ones when the album itself is locked (its members were locked with it)."""
+    return "m.private_to IS NULL" if private_to is None else f"(m.private_to IS NULL OR m.private_to = {int(private_to)})"
+
+
 def _album_row(aid: int) -> dict | None:
+    """The album, or None when it does not exist or is locked by someone
+    else (or by me while my session is locked)."""
     r = db().execute("SELECT * FROM albums WHERE id = ?", (aid,)).fetchone()
-    if not r:
+    if not r or not _can_see(r):
         return None
     d = dict(r)
+    vis = _album_member_clause(d.get("private_to"))
+    d["locked"] = d.get("private_to") is not None
     d["count"] = db().execute(
-        """SELECT COUNT(*) FROM album_media am JOIN media m ON m.id = am.media_id
-           WHERE am.album_id = ? AND m.trashed_at IS NULL""", (aid,)).fetchone()[0]
+        f"""SELECT COUNT(*) FROM album_media am JOIN media m ON m.id = am.media_id
+            WHERE am.album_id = ? AND m.trashed_at IS NULL AND {vis}""", (aid,)).fetchone()[0]
     # The chosen cover, if it is still a live member; else the newest member.
     cover = None
     if d.get("cover_id"):
         cover = db().execute(
-            """SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
-               WHERE am.album_id = ? AND am.media_id = ? AND m.trashed_at IS NULL""",
+            f"""SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
+                WHERE am.album_id = ? AND am.media_id = ? AND m.trashed_at IS NULL AND {vis}""",
             (aid, d["cover_id"])).fetchone()
     if cover is None:
         cover = db().execute(
-            """SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
-               WHERE am.album_id = ? AND m.trashed_at IS NULL
-               ORDER BY COALESCE(m.taken_at, m.mtime) DESC LIMIT 1""", (aid,)).fetchone()
+            f"""SELECT m.id FROM album_media am JOIN media m ON m.id = am.media_id
+                WHERE am.album_id = ? AND m.trashed_at IS NULL AND {vis}
+                ORDER BY COALESCE(m.taken_at, m.mtime) DESC LIMIT 1""", (aid,)).fetchone()
     d["cover"] = cover["id"] if cover else None
     return d
 
@@ -2102,6 +2444,8 @@ def list_user_albums():
     out = []
     for r in db().execute("SELECT id FROM albums ORDER BY updated_at DESC").fetchall():
         d = _album_row(r["id"])
+        if d is None:   # locked by someone else, or by me while locked
+            continue
         if mid:
             d["contains"] = db().execute(
                 "SELECT 1 FROM album_media WHERE album_id = ? AND media_id = ?",
@@ -2175,14 +2519,15 @@ def delete_user_album(aid: int):
 
 @app.get("/api/user_albums/<int:aid>/media")
 def user_album_media(aid: int):
-    if not _album_row(aid):
+    a = _album_row(aid)
+    if not a:
         abort(404)
     rows = db().execute(
         f"""SELECT {_ALBUM_ITEM_COLS}
             FROM album_media am
             JOIN media m ON m.id = am.media_id
             LEFT JOIN favorites f ON f.media_id = m.id
-            WHERE am.album_id = ? AND m.trashed_at IS NULL
+            WHERE am.album_id = ? AND m.trashed_at IS NULL AND {_album_member_clause(a.get("private_to"))}
             ORDER BY COALESCE(m.taken_at, m.mtime) DESC""", (aid,)).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -2253,7 +2598,7 @@ def list_cameras():
                         PARTITION BY COALESCE(camera_model, camera_make)) AS count
              FROM media
              WHERE (camera_model IS NOT NULL OR camera_make IS NOT NULL)
-               AND trashed_at IS NULL)
+               AND trashed_at IS NULL AND private_to IS NULL)
            SELECT camera_make AS make, camera_model AS model, count, id AS cover
            FROM t WHERE rn = 1 ORDER BY count DESC"""
     ).fetchall()
@@ -2674,7 +3019,7 @@ def cluster_media(cid: int):
     rows = db().execute(
         """SELECT DISTINCT m.id, m.name, m.kind, m.ext, m.taken_at, m.album, m.edit_version
            FROM media m JOIN faces f ON f.media_id = m.id
-           WHERE f.cluster_id = ?
+           WHERE f.cluster_id = ? AND m.private_to IS NULL
            ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
         (cid,),
     ).fetchall()
@@ -2793,7 +3138,7 @@ def media_of_person(pid: int):
     rows = db().execute(
         """SELECT m.id, m.name, m.kind, m.taken_at, m.album, m.edit_version
            FROM media m JOIN person_media pm ON pm.media_id = m.id
-           WHERE pm.person_id = ? ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
+           WHERE pm.person_id = ? AND m.private_to IS NULL ORDER BY COALESCE(m.taken_at, m.mtime) DESC""",
         (pid,),
     ).fetchall()
     return jsonify([dict(r) for r in rows])

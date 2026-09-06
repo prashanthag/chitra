@@ -68,9 +68,14 @@ def adb(*args, **kw):
     return sh(ADB, *args, **kw)
 
 
+SESSION = {"token": None}   # set once accounts exist (see the last E2E section)
+
+
 def http(path, method="GET", data=None):
-    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", method=method, data=data,
-                                 headers={"Content-Type": "application/json"} if data else {})
+    headers = {"Content-Type": "application/json"} if data else {}
+    if SESSION["token"]:
+        headers["Authorization"] = f"Bearer {SESSION['token']}"
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", method=method, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -406,6 +411,31 @@ def main():
                             "--strict", "--json", str(OUT / "bench.json")], capture_output=True, text=True)
         (OUT / "bench.txt").write_text(r.stdout + r.stderr)
         step("latency thresholds", r.returncode == 0, r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-200:])
+
+        # 8) Accounts + Locked folder. Last, because from here on the server
+        #    needs a login. Create the admin, sign the app in through a debug
+        #    extra, lock one photo via the API and check the app no longer
+        #    lists it.
+        http("/api/users", "POST", json.dumps({"name": "e2e", "password": "e2epass"}).encode())
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/media", timeout=30)
+            open_after = True
+        except urllib.error.HTTPError as e:
+            open_after = e.code != 401
+        step("server requires sign-in once an account exists", not open_after)
+        SESSION["token"] = http("/api/login", "POST", json.dumps({"name": "e2e", "password": "e2epass"}).encode())["token"]
+        target = [i for i in uploads() if i["name"] == CAMERA[0]][0]
+        http("/api/media/lock", "POST", json.dumps({"ids": [target["id"]]}).encode())
+        step("locked photo leaves the uploads feed", CAMERA[0] not in {i["name"] for i in uploads()})
+        launch(fresh=True, login_name="e2e", login_password="e2epass", filter="uploads")
+        time.sleep(6)
+        descs = [n.get("content-desc") for n in ui_dump().iter("node") if n.get("content-desc")]
+        texts = ui_texts()
+        step("app signed in and hides the locked photo",
+             "Sign in" not in texts and CAMERA[1] in descs and CAMERA[0] not in descs,
+             f"tiles {sorted(d for d in descs if d.startswith('e2e_'))}")
+        screenshot("app-locked.png")
+
     finally:
         (OUT / "report.json").write_text(json.dumps(results, indent=2))
         # Always keep the device log: WorkManager and app traces explain a

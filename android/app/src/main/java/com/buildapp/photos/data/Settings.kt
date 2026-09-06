@@ -17,6 +17,8 @@ val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(na
 
 object SettingsKeys {
     val SERVER_URL = stringPreferencesKey("server_url")
+    val SESSION_TOKEN = stringPreferencesKey("session_token")
+    val USER_NAME = stringPreferencesKey("user_name")
     val BACKUP_ENABLED = booleanPreferencesKey("backup_enabled")
     val BACKUP_LAST_ID = longPreferencesKey("backup_last_id")   // legacy cursor, unused
     val BACKUP_BUCKETS = stringSetPreferencesKey("backup_buckets")
@@ -44,6 +46,17 @@ class SettingsRepository(private val context: Context) {
     val serverUrl: Flow<String> = context.settingsDataStore.data.map { prefs ->
         prefs[SettingsKeys.SERVER_URL] ?: DEFAULT_SERVER_URL
     }
+    val sessionToken: Flow<String?> = context.settingsDataStore.data.map { it[SettingsKeys.SESSION_TOKEN] }
+    val userName: Flow<String?> = context.settingsDataStore.data.map { it[SettingsKeys.USER_NAME] }
+
+    suspend fun setSession(token: String?, userName: String?) {
+        context.settingsDataStore.edit {
+            if (token == null) it.remove(SettingsKeys.SESSION_TOKEN) else it[SettingsKeys.SESSION_TOKEN] = token
+            if (userName == null) it.remove(SettingsKeys.USER_NAME) else it[SettingsKeys.USER_NAME] = userName
+        }
+        com.buildapp.photos.api.Auth.token = token
+    }
+
     val backupEnabled: Flow<Boolean> = context.settingsDataStore.data.map {
         it[SettingsKeys.BACKUP_ENABLED] ?: false
     }

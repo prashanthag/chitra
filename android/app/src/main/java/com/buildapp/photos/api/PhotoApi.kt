@@ -16,6 +16,43 @@ interface PhotoApi {
     @GET("api/health")
     suspend fun health(): Health
 
+    // Accounts and the Locked folder
+    @GET("api/auth/state")
+    suspend fun authState(): AuthState
+
+    @POST("api/login")
+    suspend fun login(@retrofit2.http.Body body: LoginBody): LoginResp
+
+    @POST("api/logout")
+    suspend fun logout(): OkResp
+
+    @GET("api/users")
+    suspend fun users(): List<User>
+
+    @POST("api/users")
+    suspend fun createUser(@retrofit2.http.Body body: NewUserBody): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @retrofit2.http.DELETE("api/users/{id}")
+    suspend fun deleteUser(@Path("id") id: Int): OkResp
+
+    @POST("api/locked/unlock")
+    suspend fun unlockLocked(@retrofit2.http.Body body: PasswordBody): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @POST("api/locked/lock")
+    suspend fun lockLocked(): OkResp
+
+    @POST("api/media/lock")
+    suspend fun lockMedia(@retrofit2.http.Body body: IdsBody): LockResp
+
+    @POST("api/media/unlock")
+    suspend fun unlockMedia(@retrofit2.http.Body body: IdsBody): LockResp
+
+    @POST("api/user_albums/{id}/lock")
+    suspend fun lockUserAlbum(@Path("id") id: Int): OkResp
+
+    @POST("api/user_albums/{id}/unlock")
+    suspend fun unlockUserAlbum(@Path("id") id: Int): OkResp
+
     @GET("api/media/{id}")
     suspend fun meta(@retrofit2.http.Path("id") id: String): MediaItem
 
@@ -35,6 +72,8 @@ interface PhotoApi {
         @Query("archived") archived: Int? = null,
         @Query("dated") dated: Int? = null,
         @Query("undated") undated: Int? = null,
+        /** 1 = my Locked folder (the session must be unlocked first). */
+        @Query("locked") locked: Int? = null,
         /** "added" = newest upload first (Recently uploaded); default is capture date. */
         @Query("sort") sort: String? = null,
     ): MediaPage
@@ -132,6 +171,7 @@ interface PhotoApi {
                 level = HttpLoggingInterceptor.Level.BASIC
             }
             val client = OkHttpClient.Builder()
+                .addInterceptor(Auth.interceptor)
                 .addInterceptor(logging)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)

@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -204,6 +206,7 @@ fun SettingsScreen(
             }
 
             item {
+                AccountSection(serverUrl)
                 SectionTitle("Back up device folders")
                 Text(
                     "Only the folders switched on are uploaded. Camera is on by default; " +
@@ -227,6 +230,81 @@ fun SettingsScreen(
                 HorizontalDivider(color = Color(0xFF26262A))
             }
         }
+    }
+}
+
+/**
+ * Accounts: who is signed in, sign out, and (admin) the user list with an
+ * add row. With no accounts yet, a "Create admin" row switches the server
+ * from open to sign-in required.
+ */
+@Composable
+private fun AccountSection(serverUrl: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    val settings = remember { SettingsRepository(context) }
+    var auth by remember { mutableStateOf<com.buildapp.photos.api.AuthState?>(null) }
+    var users by remember { mutableStateOf<List<com.buildapp.photos.api.User>>(emptyList()) }
+    var tick by remember { mutableStateOf(0) }
+    var name by remember { mutableStateOf("") }
+    var pw by remember { mutableStateOf("") }
+    var role by remember { mutableStateOf("member") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(serverUrl, tick) {
+        auth = runCatching { api.authState() }.getOrNull()
+        users = if (auth?.user?.role == "admin") runCatching { api.users() }.getOrDefault(emptyList()) else emptyList()
+    }
+    SectionTitle("Account")
+    val a = auth
+    when {
+        a == null -> Text("…", color = Color.Gray, fontSize = 12.sp)
+        !a.authRequired -> Text("No accounts yet: everyone on the network is an admin. Create the first account to require sign-in.",
+            color = Color.Gray, fontSize = 12.sp)
+        a.user == null -> Text("Not signed in. Sign in from the prompt on the Photos screen.", color = Color.Gray, fontSize = 12.sp)
+        else -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Signed in as ${a.user.name} (${a.user.role})", modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = {
+                scope.launch {
+                    runCatching { api.logout() }
+                    settings.setSession(null, null); tick++
+                }
+            }) { Text("Sign out") }
+        }
+    }
+    if (a != null && (!a.authRequired || a.user?.role == "admin")) {
+        users.forEach { u ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(u.name, modifier = Modifier.weight(1f))
+                Text(u.role, color = Color.Gray, fontSize = 12.sp)
+                if (u.id != a.user?.id) IconButton(onClick = {
+                    scope.launch { runCatching { api.deleteUser(u.id) }; tick++ }
+                }) { Icon(Icons.Default.Delete, contentDescription = "Delete user", tint = Color.Gray) }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") }, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
+            OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true, label = { Text("Password") },
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (a.authRequired) {
+                FilterChip(selected = role == "member", onClick = { role = "member" }, label = { Text("member") })
+                Spacer(Modifier.width(8.dp))
+                FilterChip(selected = role == "admin", onClick = { role = "admin" }, label = { Text("admin") })
+                Spacer(Modifier.weight(1f))
+            }
+            Button(onClick = {
+                scope.launch {
+                    val r = runCatching { api.createUser(com.buildapp.photos.api.NewUserBody(name.trim(), pw, if (a.authRequired) role else "admin")) }
+                    msg = if (r.isSuccess) (if (a.authRequired) "User added" else "Admin created. Sign in from the Photos screen.") else "Could not create (name taken, or password under 4 characters)"
+                    if (r.isSuccess) { name = ""; pw = "" }
+                    tick++
+                }
+            }) { Text(if (a.authRequired) "Add user" else "Create admin") }
+        }
+        msg?.let { Text(it, color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)) }
     }
 }
 

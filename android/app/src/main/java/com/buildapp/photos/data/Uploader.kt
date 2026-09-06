@@ -55,6 +55,7 @@ object Uploader {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
     private val client = OkHttpClient.Builder()
+        .addInterceptor(com.buildapp.photos.api.Auth.interceptor)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(10, TimeUnit.MINUTES)

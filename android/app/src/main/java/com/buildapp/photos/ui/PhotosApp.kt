@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.verticalScroll
@@ -139,6 +140,15 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         AddToAlbumDialog(serverUrl = state.serverUrl, item = item,
             onDismiss = { albumPickFor = null }, onChanged = { albumsChanged++ })
     }
+    // Accounts: a 401 anywhere asks to sign in; the Locked folder asks for
+    // the password again. Both come from the view model's flags.
+    if (state.needLogin) LoginDialog(vm = vm, onDismiss = { vm.clearAuthPrompts() })
+    var unlockThen by remember { mutableStateOf<(() -> Unit)?>(null) }
+    if (state.needUnlock || unlockThen != null) UnlockDialog(
+        vm = vm,
+        onDismiss = { vm.clearAuthPrompts(); unlockThen = null; if (route is Route.Collection && (route as Route.Collection).filter == Filter.LOCKED) { vm.setFilter(Filter.ALL); route = Route.Gallery } },
+        onUnlocked = { vm.clearAuthPrompts(); unlockThen?.invoke(); unlockThen = null },
+    )
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -326,6 +336,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) }, onRestore = { vm.restore(it) }, onRotate = { vm.rotate(it) },
                     onEdit = { route = Route.Editor(it); liveViewerIndex = null },
                     onAddToAlbum = { albumPickFor = it },
+                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
+                    lockedView = r.filter == Filter.LOCKED,
                 )
             }
             return
@@ -443,6 +455,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onCluster = { route = Route.ClusterMedia(it) },
                     onMap = { route = Route.Map },
                     onCollection = { route = Route.Collection(it) },
+                    signedIn = state.user != null,
+                    onLocked = { unlockThen = { route = Route.Collection(Filter.LOCKED) } },
                 )
             }
         }
@@ -461,6 +475,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onRotate = { vm.rotate(it) },
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
             onAddToAlbum = { albumPickFor = it },
+            onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true) } else null,
         )
     }
     staticViewer?.let { (list, idx) ->
@@ -473,6 +488,51 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         )
     }
 
+}
+
+@Composable
+private fun LoginDialog(vm: GalleryViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var pw by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sign in") },
+        text = {
+            Column {
+                Text("This library needs an account.", color = Color.Gray, fontSize = 13.sp)
+                OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
+                    modifier = Modifier.padding(top = 8.dp))
+                OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true, label = { Text("Password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.padding(top = 8.dp))
+                err?.let { Text(it, color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { vm.login(name.trim(), pw) { e -> err = e } }) { Text("Sign in") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun UnlockDialog(vm: GalleryViewModel, onDismiss: () -> Unit, onUnlocked: () -> Unit) {
+    var pw by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Locked folder") },
+        text = {
+            Column {
+                Text("Enter your password to open it.", color = Color.Gray, fontSize = 13.sp)
+                OutlinedTextField(value = pw, onValueChange = { pw = it; err = false }, singleLine = true, label = { Text("Password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.padding(top = 8.dp))
+                if (err) Text("Wrong password", color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = { vm.unlockLocked(pw) { ok -> if (ok) onUnlocked() else err = true } }) { Text("Unlock") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Picker listing every manual album with a check for the ones this item is in; tap toggles. */
@@ -627,6 +687,8 @@ private fun CollectionsTab(
     onCluster: (Cluster) -> Unit,
     onMap: () -> Unit,
     onCollection: (Filter) -> Unit,
+    signedIn: Boolean = false,
+    onLocked: () -> Unit = {},
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     var userAlbums by remember(serverUrl) { mutableStateOf<List<UserAlbum>>(emptyList()) }
@@ -677,6 +739,7 @@ private fun CollectionsTab(
         CollectionRow(Icons.Default.HelpOutline, "Unknown date") { onCollection(Filter.UNKNOWN) }
         CollectionRow(Icons.Default.Archive, "Archive") { onCollection(Filter.ARCHIVED) }
         CollectionRow(Icons.Default.Delete, "Trash", "Kept 60 days") { onCollection(Filter.TRASH) }
+        if (signedIn) CollectionRow(Icons.Default.Lock, "Locked folder", "Only you, after your password", onLocked)
         Spacer(Modifier.height(24.dp))
     }
 }

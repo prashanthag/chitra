@@ -155,6 +155,114 @@ class UserAlbumTests(unittest.TestCase):
         client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
 
 
+class AccountsAndLockTests(unittest.TestCase):
+    """Accounts switch the server from open to login-only; a user's Locked
+    folder hides items from every listing and every other account."""
+
+    def setUp(self):
+        self.admin = chitra.app.test_client()
+        self.member = chitra.app.test_client()
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET private_to = NULL")
+        conn.execute("UPDATE albums SET private_to = NULL")
+        conn.execute("DELETE FROM album_media")
+        conn.execute("DELETE FROM albums")
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+
+    def _names(self, c, **q):
+        r = c.get("/api/media", query_string={"per_page": 200, **q})
+        self.assertEqual(r.status_code, 200, r.data)
+        return [i["name"] for i in r.get_json()["items"]]
+
+    def test_bootstrap_login_roles_and_locked_folder(self):
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        # Open server: no accounts, nothing required.
+        self.assertFalse(client.get("/api/auth/state").get_json()["auth_required"])
+        # First account is the admin, created without a login.
+        r = client.post("/api/users", json={"name": "prash", "password": "secret1", "role": "member"})
+        self.assertEqual(r.get_json()["user"]["role"], "admin")
+        # From now on the API needs a login; health and public shares stay open.
+        self.assertEqual(client.get("/api/media").status_code, 401)
+        self.assertEqual(client.get("/api/health").status_code, 200)
+        self.assertEqual(client.post("/api/login", json={"name": "prash", "password": "nope"}).status_code, 401)
+        r = self.admin.post("/api/login", json={"name": "prash", "password": "secret1"})
+        self.assertEqual(r.status_code, 200)
+        token = r.get_json()["token"]
+        self.assertIn("one.jpg", self._names(self.admin))          # cookie session
+        bearer = chitra.app.test_client()
+        r = bearer.get("/api/media", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r.status_code, 200)                       # header session
+        # Admin creates a member; members cannot manage users.
+        self.assertEqual(self.admin.post("/api/users", json={"name": "kid", "password": "pass1", "role": "member"}).status_code, 200)
+        self.assertEqual(self.member.post("/api/login", json={"name": "kid", "password": "pass1"}).status_code, 200)
+        self.assertEqual(self.member.get("/api/users").status_code, 403)
+        self.assertEqual(len(self.admin.get("/api/users").get_json()), 2)
+
+        # A share link exists on one.jpg; locking must revoke it.
+        share = self.admin.post(f"/api/media/{one}/share").get_json()["token"]
+        self.assertEqual(client.get(f"/s/{share}").status_code, 200)
+
+        # Lock one.jpg into the admin's Locked folder.
+        r = self.admin.post("/api/media/lock", json={"ids": [one]})
+        self.assertEqual(r.get_json()["locked"], 1)
+        for c in (self.admin, self.member):
+            self.assertNotIn("one.jpg", self._names(c))
+            self.assertNotIn("one.jpg", self._names(c, q="one"))
+            self.assertEqual(c.get(f"/api/media/{one}/thumb").status_code, 404)
+            self.assertEqual(c.get(f"/api/media/{one}").status_code, 404)
+        self.assertEqual(client.get(f"/s/{share}").status_code, 404)
+        self.assertEqual(self.admin.post(f"/api/media/{one}/share").status_code, 404)
+        # Not counted anywhere either: the timeline totals exclude it.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        visible_rows = conn.execute("SELECT COUNT(*) FROM media WHERE private_to IS NULL").fetchone()[0]
+        conn.close()
+        self.assertEqual(sum(b["n"] for b in self.admin.get("/api/timeline").get_json()), visible_rows)
+        # The Locked folder needs the password again, then lists only mine.
+        self.assertEqual(self.admin.get("/api/media", query_string={"locked": 1}).status_code, 401)
+        self.assertEqual(self.admin.post("/api/locked/unlock", json={"password": "wrong"}).status_code, 403)
+        self.assertEqual(self.admin.post("/api/locked/unlock", json={"password": "secret1"}).status_code, 200)
+        self.assertTrue(self.admin.get("/api/auth/state").get_json()["unlocked"])
+        self.assertEqual(self._names(self.admin, locked=1), ["one.jpg"])
+        self.assertEqual(self.admin.get(f"/api/media/{one}/thumb").status_code, 200)
+        self.assertNotIn("one.jpg", self._names(self.admin))       # still out of the normal feed
+        # The other account sees nothing, unlocked or not.
+        self.member.post("/api/locked/unlock", json={"password": "pass1"})
+        self.assertEqual(self._names(self.member, locked=1), [])
+        self.assertEqual(self.member.get(f"/api/media/{one}/thumb").status_code, 404)
+        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).get_json()["unlocked"], 0)
+        # Re-lock the session, then unlock the item for real.
+        self.admin.post("/api/locked/lock")
+        self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)
+        self.admin.post("/api/locked/unlock", json={"password": "secret1"})
+        self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).get_json()["unlocked"], 1)
+        self.assertIn("one.jpg", self._names(self.member))
+
+        # Lock a whole album: it and its members vanish for everyone else,
+        # and reappear for the owner (with its members) once unlocked.
+        aid = self.admin.post("/api/user_albums", json={"name": "Private", "media_ids": [two]}).get_json()["album"]["id"]
+        self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/lock").status_code, 200)
+        self.assertEqual([a["id"] for a in self.member.get("/api/user_albums").get_json()], [])
+        self.assertEqual(self.member.get(f"/api/user_albums/{aid}/media").status_code, 404)
+        self.assertNotIn("two.jpg", self._names(self.member, undated=1))
+        mine = [a for a in self.admin.get("/api/user_albums").get_json() if a["id"] == aid]
+        self.assertEqual((mine[0]["locked"], mine[0]["count"]), (True, 1))
+        self.assertEqual([i["name"] for i in self.admin.get(f"/api/user_albums/{aid}/media").get_json()], ["two.jpg"])
+        self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/unlock").status_code, 200)
+        self.assertIn("two.jpg", self._names(self.member, undated=1))
+
+        # Deleting an account releases its locked items and ends its sessions.
+        kid = [u for u in self.admin.get("/api/users").get_json() if u["name"] == "kid"][0]["id"]
+        self.member.post("/api/media/lock", json={"ids": [two]})
+        self.assertEqual(self.admin.delete(f"/api/users/{kid}").status_code, 200)
+        self.assertEqual(self.member.get("/api/media").status_code, 401)
+        self.assertIn("two.jpg", self._names(self.admin, undated=1))
+
+
 class UploadSourceTests(unittest.TestCase):
     """Backup uploads carry the phone's device name and source folder."""
 

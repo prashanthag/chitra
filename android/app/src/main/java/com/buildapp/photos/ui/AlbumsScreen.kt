@@ -45,6 +45,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -181,7 +183,7 @@ private fun UserAlbumTile(album: UserAlbum, serverUrl: String, onClick: () -> Un
         }
         Text(album.name, modifier = Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall)
         Text(
-            "${album.count} items" + if (album.shareToken != null) " · shared" else "",
+            "${album.count} items" + (if (album.locked) " · locked" else if (album.shareToken != null) " · shared" else ""),
             color = Color.Gray, style = MaterialTheme.typography.bodySmall,
         )
     }
@@ -246,6 +248,16 @@ fun UserAlbumScreen(
                             }
                         }
                     }) { Icon(Icons.Default.Share, contentDescription = "Share link") }
+                    IconButton(onClick = {
+                        scope.launch {
+                            try {
+                                if (album.locked) api.unlockUserAlbum(album.id) else api.lockUserAlbum(album.id)
+                                onDeleted()   // leave the screen: the album has moved in or out of the Locked folder
+                            } catch (e: Exception) {
+                                android.widget.Toast.makeText(context, if (album.locked) "Unlock the Locked folder first" else "Sign in to lock", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }) { Icon(if (album.locked) Icons.Default.LockOpen else Icons.Default.Lock, contentDescription = if (album.locked) "Unlock album" else "Lock album") }
                     IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, contentDescription = "Delete album") }
                 },
             )
