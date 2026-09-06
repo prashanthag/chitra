@@ -1,28 +1,32 @@
 import SwiftUI
 import AVKit
 
-/// Full-screen pager over a list of items, with the same action row the
-/// Android `ViewerDialog` puts in its top-right corner.
+/// Full-screen pager, chromed the way Photos is: a slim top bar with the
+/// capture date, actions on a bottom toolbar, both hidden by a tap, and a
+/// downward drag to dismiss.
 struct ViewerView: View {
     let items: [MediaItem]
     let initialIndex: Int
     let serverURL: String
     var onToggleFavorite: (MediaItem) -> Void = { _ in }
-    var onTrash: ((MediaItem) -> Void)? = nil
-    var onArchive: ((MediaItem) -> Void)? = nil
-    var onRestore: ((MediaItem) -> Void)? = nil
-    var onRotate: ((MediaItem) -> Void)? = nil
-    var onEdit: ((MediaItem) -> Void)? = nil
-    /// nil hides the button (a trashed item, or a list that isn't editable).
-    var onAlbumChanged: (() -> Void)? = nil
+    var onTrash: ((MediaItem) -> Void)?
+    var onArchive: ((MediaItem) -> Void)?
+    var onRestore: ((MediaItem) -> Void)?
+    var onRotate: ((MediaItem) -> Void)?
+    var onEdit: ((MediaItem) -> Void)?
+    /// nil hides "Add to Album".
+    var onAlbumChanged: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
+    @State private var chromeVisible = true
     @State private var showInfo = false
     @State private var detail: MediaItem?
     @State private var shareURL: URL?
     @State private var preparingShare = false
     @State private var addingToAlbum: MediaItem?
+    @State private var zoomed = false
+    @State private var dragOffset: CGFloat = 0
 
     init(items: [MediaItem], initialIndex: Int, serverURL: String,
          onToggleFavorite: @escaping (MediaItem) -> Void = { _ in },
@@ -46,13 +50,19 @@ struct ViewerView: View {
     }
 
     private var current: MediaItem? {
-        guard !items.isEmpty else { return nil }
-        return items[min(index, items.count - 1)]
+        items.isEmpty ? nil : items[min(index, items.count - 1)]
+    }
+
+    /// How far through the dismiss drag we are, for the background fade.
+    private var dismissProgress: CGFloat {
+        min(1, abs(dragOffset) / 300)
     }
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .opacity(1 - dismissProgress * 0.6)
+                .ignoresSafeArea()
 
             TabView(selection: $index) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
@@ -62,27 +72,44 @@ struct ViewerView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
+            .offset(y: dragOffset)
+            .scaleEffect(1 - dismissProgress * 0.15)
 
-            if let item = current {
-                actionBar(for: item)
-                if showInfo {
-                    infoPanel(for: detail ?? item)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                        .padding(16)
-                }
+            if let item = current, chromeVisible {
+                topBar(for: item)
+                bottomBar(for: item)
             }
         }
-        .statusBarHidden()
-        .onChange(of: index) { _, _ in
-            showInfo = false
-            detail = nil
+        .statusBarHidden(!chromeVisible)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) { chromeVisible.toggle() }
         }
-        .task(id: showInfo ? current?.id : nil) {
-            // The list API omits GPS/camera columns — fetch the full record.
-            guard showInfo, let item = current else { return }
-            var fetched = try? await PhotoAPI(baseUrl: serverURL).meta(item.id)
-            fetched?.favorite = item.favorite
-            detail = fetched
+        // A downward flick closes the viewer. Only when the photo is not
+        // zoomed in — panning a zoomed photo owns the drag instead.
+        .simultaneousGesture(
+            zoomed ? nil :
+                DragGesture(minimumDistance: 24)
+                    .onChanged { value in
+                        guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                        dragOffset = value.translation.height
+                    }
+                    .onEnded { value in
+                        if dragOffset > 120 || value.predictedEndTranslation.height > 400 {
+                            dismiss()
+                        } else {
+                            withAnimation(.spring(response: 0.3)) { dragOffset = 0 }
+                        }
+                    }
+        )
+        .onChange(of: index) { _, _ in
+            detail = nil
+            zoomed = false
+        }
+        .sheet(isPresented: $showInfo) {
+            if let item = current {
+                InfoSheet(item: detail ?? item, serverURL: serverURL) { detail = $0 }
+            }
         }
         .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
             if let shareURL { ShareSheet(items: [shareURL]) }
@@ -92,6 +119,8 @@ struct ViewerView: View {
         }
         .onAppear { if items.isEmpty { dismiss() } }
     }
+
+    // MARK: - Pages
 
     @ViewBuilder
     private func page(for item: MediaItem, isCurrent: Bool) -> some View {
@@ -108,86 +137,159 @@ struct ViewerView: View {
             // The cached 2048px preview: EXIF-rotated, HEIC/TIFF flattened,
             // immutable-cached. The original would be re-encoded by the server
             // on every swipe.
-            ZoomableImage(url: Urls.preview(serverURL, item.id, version: item.editVersion))
+            ZoomableImage(url: Urls.preview(serverURL, item.id, version: item.editVersion),
+                          zoomed: $zoomed)
         }
     }
 
-    private func actionBar(for item: MediaItem) -> some View {
+    // MARK: - Chrome
+
+    private func topBar(for item: MediaItem) -> some View {
         VStack {
-            HStack(spacing: 2) {
-                Spacer()
-                button("info.circle") { showInfo.toggle() }
-                if onAlbumChanged != nil, !item.isTrashed {
-                    button("rectangle.stack.badge.plus") { addingToAlbum = item }
+            HStack {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.system(size: 17, weight: .semibold))
                 }
-                button(preparingShare ? "hourglass" : "square.and.arrow.up") {
+                Spacer()
+                VStack(spacing: 0) {
+                    Text(viewerDayLabel(item.takenAt)).font(.footnote.weight(.medium))
+                    Text(viewerTimeLabel(item.takenAt)).font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                moreMenu(for: item)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+            Spacer()
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    @ViewBuilder
+    private func moreMenu(for item: MediaItem) -> some View {
+        Menu {
+            if !item.isTrashed {
+                if onAlbumChanged != nil {
+                    Button { addingToAlbum = item } label: { Label("Add to Album", systemImage: "rectangle.stack.badge.plus") }
+                }
+                if !item.isVideo {
+                    if let onEdit {
+                        Button { onEdit(item); dismiss() } label: { Label("Adjust", systemImage: "slider.horizontal.3") }
+                    }
+                    if let onRotate {
+                        Button { onRotate(item) } label: { Label("Rotate", systemImage: "rotate.right") }
+                    }
+                }
+                if let onArchive {
+                    Button { onArchive(item); dismiss() } label: {
+                        Label(item.archived == 1 ? "Unarchive" : "Archive",
+                              systemImage: item.archived == 1 ? "tray.and.arrow.up" : "archivebox")
+                    }
+                }
+            } else if let onRestore {
+                Button { onRestore(item); dismiss() } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle").font(.system(size: 17))
+        }
+    }
+
+    private func bottomBar(for item: MediaItem) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Button {
                     guard !preparingShare else { return }
                     preparingShare = true
                     Task {
                         shareURL = await Downloader.downloadForSharing(item: item, serverURL: serverURL)
                         preparingShare = false
                     }
+                } label: {
+                    Image(systemName: preparingShare ? "hourglass" : "square.and.arrow.up")
                 }
-                button(item.isFavorite ? "heart.fill" : "heart",
-                       tint: item.isFavorite ? Palette.favorite : .white) {
-                    onToggleFavorite(item)
+                Spacer()
+                Button { onToggleFavorite(item) } label: {
+                    Image(systemName: item.isFavorite ? "heart.fill" : "heart")
+                        .foregroundStyle(item.isFavorite ? Palette.favorite : Color.accentColor)
                 }
-                if item.isTrashed {
-                    if let onRestore {
-                        button("arrow.uturn.backward") { onRestore(item); dismiss() }
+                Spacer()
+                Button { showInfo = true } label: { Image(systemName: "info.circle") }
+                Spacer()
+                if let onTrash, !item.isTrashed {
+                    Button(role: .destructive) { onTrash(item); dismiss() } label: {
+                        Image(systemName: "trash")
                     }
                 } else {
-                    if !item.isVideo {
-                        if let onEdit { button("slider.horizontal.3") { onEdit(item); dismiss() } }
-                        if let onRotate { button("rotate.right") { onRotate(item) } }
-                    }
-                    if let onArchive {
-                        button(item.archived == 1 ? "tray.and.arrow.up" : "archivebox") {
-                            onArchive(item); dismiss()
-                        }
-                    }
-                    if let onTrash { button("trash") { onTrash(item); dismiss() } }
-                }
-                button("xmark") { dismiss() }
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 4)
-            Spacer()
-        }
-    }
-
-    private func button(_ systemName: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 17))
-                .foregroundStyle(tint)
-                .frame(width: 40, height: 40)
-                .background(Color.black.opacity(0.35), in: Circle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func infoPanel(for item: MediaItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(infoRows(for: item), id: \.0) { key, value in
-                HStack(alignment: .top, spacing: 8) {
-                    Text(key)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Palette.secondaryText)
-                        .frame(minWidth: 90, alignment: .leading)
-                    Text(value)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white)
+                    Image(systemName: "trash").opacity(0)
                 }
             }
+            .font(.system(size: 20))
+            .padding(.horizontal, 32)
+            .padding(.vertical, 12)
+            .background(.bar)
         }
-        .padding(16)
-        .background(Palette.panel.opacity(0.87), in: RoundedRectangle(cornerRadius: 12))
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+private func viewerDayLabel(_ epoch: Double?) -> String {
+    guard let epoch, epoch > 0 else { return "Date unknown" }
+    let formatter = DateFormatter()
+    formatter.dateStyle = .long
+    formatter.timeStyle = .none
+    return formatter.string(from: Date(timeIntervalSince1970: epoch))
+}
+
+private func viewerTimeLabel(_ epoch: Double?) -> String {
+    guard let epoch, epoch > 0 else { return "" }
+    let formatter = DateFormatter()
+    formatter.dateStyle = .none
+    formatter.timeStyle = .short
+    return formatter.string(from: Date(timeIntervalSince1970: epoch))
+}
+
+/// The metadata card, as a half-height sheet the way Photos shows "Info".
+private struct InfoSheet: View {
+    let item: MediaItem
+    let serverURL: String
+    var onDetail: (MediaItem) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var loaded: MediaItem?
+
+    private var shown: MediaItem { loaded ?? item }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(infoRows(for: shown), id: \.0) { key, value in
+                        LabeledContent(key, value: value)
+                    }
+                }
+            }
+            .navigationTitle(shown.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .task {
+            // The list API omits GPS/camera columns — fetch the full record.
+            guard var fetched = try? await PhotoAPI(baseUrl: serverURL).meta(item.id) else { return }
+            fetched.favorite = item.favorite
+            loaded = fetched
+            onDetail(fetched)
+        }
     }
 
     private func infoRows(for item: MediaItem) -> [(String, String)] {
-        var rows: [(String, String)] = [("Name", item.name)]
-        rows.append(("Taken", takenAtLabel(item.takenAt)))
+        var rows: [(String, String)] = [("Taken", takenAtLabel(item.takenAt))]
         let camera = [item.cameraMake, item.cameraModel].compactMap { $0 }.joined(separator: " ")
         if !camera.isEmpty { rows.append(("Camera", camera)) }
         let exposure = item.exposure ?? [:]
@@ -217,10 +319,11 @@ struct ViewerView: View {
     }
 }
 
-/// A photo that pinches and double-taps to zoom. Panning only takes over the
-/// gesture once zoomed in, so a swipe at 1× still turns the page.
+/// A photo that pinches and double-taps to zoom. `zoomed` is lifted out so the
+/// viewer can stand its dismiss gesture down while the photo is magnified.
 private struct ZoomableImage: View {
     let url: String
+    @Binding var zoomed: Bool
 
     @State private var scale: CGFloat = 1
     @State private var pinch: CGFloat = 1
@@ -240,25 +343,28 @@ private struct ZoomableImage: View {
                         scale = max(1, scale * pinch)
                         pinch = 1
                         if scale == 1 { offset = .zero }
+                        zoomed = scale > 1
                     }
             )
             .simultaneousGesture(
-                DragGesture()
-                    .onChanged { if total > 1 { drag = $0.translation } }
-                    .onEnded { _ in
-                        offset.width += drag.width
-                        offset.height += drag.height
-                        drag = .zero
-                    },
-                including: total > 1 ? .all : .subviews
+                total > 1
+                    ? DragGesture()
+                        .onChanged { drag = $0.translation }
+                        .onEnded { _ in
+                            offset.width += drag.width
+                            offset.height += drag.height
+                            drag = .zero
+                        }
+                    : nil
             )
             .onTapGesture(count: 2) {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 }
+                    zoomed = scale > 1
                 }
             }
             .onChange(of: url) { _, _ in
-                scale = 1; pinch = 1; offset = .zero; drag = .zero
+                scale = 1; pinch = 1; offset = .zero; drag = .zero; zoomed = false
             }
     }
 }

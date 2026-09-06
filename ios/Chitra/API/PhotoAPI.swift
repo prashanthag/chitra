@@ -184,6 +184,20 @@ struct PhotoAPI {
         return resp["edit_version"]?.intValue
     }
 
+    /// Batch actions behind the library's Select mode. The server only lets
+    /// `batchDelete` touch items already in the trash.
+    func batchTrash(_ ids: [String]) async throws {
+        try await fire("POST", "api/media/batch_trash", body: try Self.encoder.encode(IdsBody(ids: ids)))
+    }
+
+    func batchRestore(_ ids: [String]) async throws {
+        try await fire("POST", "api/media/batch_restore", body: try Self.encoder.encode(IdsBody(ids: ids)))
+    }
+
+    func batchDelete(_ ids: [String]) async throws {
+        try await fire("POST", "api/media/batch_delete", body: try Self.encoder.encode(IdsBody(ids: ids)))
+    }
+
     func share(_ id: String) async throws -> ShareResp {
         try await send(try request("POST", "api/media/\(id)/share"), as: ShareResp.self)
     }

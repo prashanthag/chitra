@@ -62,8 +62,31 @@ lines flagged in `project.yml` and the icon ships.
 | --- | --- |
 | `Chitra/API` | `Models.swift`, `PhotoAPI.swift` (one method per Retrofit endpoint), `Urls.swift` |
 | `Chitra/Data` | Settings, PhotoKit access, content hash, upload ledger, uploader, backup service |
-| `Chitra/UI` | Gallery, viewer, albums, people, map, editor, settings |
+| `Chitra/UI` | `RootView` (tabs), `LibraryView`, `MemoriesView`, `AlbumsView`, `SearchView`, `ViewerView`, plus people, map, editor and settings |
 | `Tools` | Simulator-free logic check |
+
+## Shape of the app
+
+Four tabs, the way Photos arranges itself — not the Android client's single
+screen with everything hung off one top bar:
+
+- **Library** — the whole roll under pinned month headers. Filtering is a
+  toolbar menu, multi-select a Select button with a bottom action bar (trash
+  and restore go through the server's batch endpoints), and long-pressing a
+  tile opens a context menu.
+- **Memories** — a full-bleed card per year that has photos from this day.
+- **Albums** — manual albums, phone folders and library folders as cover
+  grids, then People, Places, Media Types and Utilities as rows.
+- **Search** — the system search field with Filename / Smart scopes, Smart
+  being the server's CLIP index.
+
+The viewer follows Photos too: a translucent bar with the capture date, actions
+on a bottom toolbar, both hidden by a tap, a downward drag to dismiss, pinch
+and double-tap to zoom, and metadata in a half-height sheet.
+
+The Android client's Material affordances — floating action button, chip rail,
+circular overlay buttons, inline info card — are deliberately absent. Every
+feature is still there; it is reached the way an iOS user expects.
 
 ### How it maps to the Android client
 
@@ -78,6 +101,7 @@ lines flagged in `project.yml` and the icon ships.
 | WorkManager periodic + content-URI trigger | `BGProcessingTask` + `PHPhotoLibraryChangeObserver` + a sweep on foreground |
 | `UploadLedger` (SQLite) | same, plus a cache of computed content hashes |
 | `DebugHooks` launch extras | `DebugHooks` launch environment |
+| Top-bar icon row + FAB + chip rail | Tab bar, toolbar menus, `.searchable` |
 
 Two differences are the platform's, not choices:
 
@@ -106,4 +130,6 @@ SIMCTL_CHILD_CHITRA_LEDGER_CLEAR=1 \
   xcrun simctl launch --terminate-running-process booted com.buildapp.photos
 ```
 
-A release build ignores all of it.
+`CHITRA_ROUTE` picks where to start: a tab (`memories`, `albums`, `search`), a
+screen pushed inside one (`settings`, `people`, `map`), or `viewer` to open the
+first library item full-screen. A release build ignores all of it.

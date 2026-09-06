@@ -14,7 +14,7 @@ struct ChitraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .preferredColorScheme(.dark)
         }
         .onChange(of: scenePhase) { _, phase in

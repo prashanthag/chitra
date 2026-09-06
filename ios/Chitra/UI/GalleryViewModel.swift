@@ -16,8 +16,11 @@ final class GalleryViewModel: ObservableObject {
     @Published var query = ""
     @Published var semantic = false
     @Published var upload: UploadProgress?
-    /// One-off message for the transient banner (the Android Toast).
+    /// One-off message, surfaced as a brief overlay.
     @Published var notice: String?
+    /// Selection mode, driven by the library's "Select" button.
+    @Published var isSelecting = false
+    @Published var selection: Set<String> = []
 
     private let settings = SettingsStore.shared
     private var api: PhotoAPI
@@ -126,6 +129,7 @@ final class GalleryViewModel: ObservableObject {
     }
 
     private func resetAndLoad() {
+        endSelection()
         generation += 1
         endReached = false
         items = []
@@ -235,6 +239,79 @@ final class GalleryViewModel: ObservableObject {
                 // tile reloads, and stays in step with what a refresh returns.
                 let fromServer = try await api.rotate(item.id, degrees: degrees)
                 update(item.id) { $0.editVersion = fromServer ?? ($0.editVersion + 1) }
+            } catch { actionFailed(error) }
+        }
+    }
+
+    // MARK: - Selection
+
+    func beginSelection() {
+        isSelecting = true
+        selection = []
+    }
+
+    func endSelection() {
+        isSelecting = false
+        selection = []
+    }
+
+    func toggleSelection(_ item: MediaItem) {
+        if selection.contains(item.id) { selection.remove(item.id) } else { selection.insert(item.id) }
+    }
+
+    var selectedItems: [MediaItem] { items.filter { selection.contains($0.id) } }
+
+    /// Trash, restore and permanent delete have batch endpoints. Favourite and
+    /// archive do not, so those walk the selection one call at a time.
+    func trashSelected() {
+        runBatch { api, ids in try await api.batchTrash(ids) } thenRemove: { true }
+    }
+
+    func restoreSelected() {
+        runBatch { api, ids in try await api.batchRestore(ids) } thenRemove: { true }
+    }
+
+    func deleteSelected() {
+        runBatch { api, ids in try await api.batchDelete(ids) } thenRemove: { true }
+    }
+
+    func favoriteSelected() {
+        let chosen = selectedItems
+        endSelection()
+        Task { [api] in
+            for item in chosen where !item.isFavorite {
+                if let response = try? await api.toggleFavorite(item.id) {
+                    update(item.id) { $0.favorite = response.favorite ? 1 : 0 }
+                }
+            }
+        }
+    }
+
+    func archiveSelected() {
+        let ids = Array(selection)
+        endSelection()
+        Task { [api] in
+            for id in ids {
+                do {
+                    try await api.archive(id)
+                    remove(id)
+                } catch { actionFailed(error) }
+            }
+        }
+    }
+
+    private func runBatch(_ call: @escaping (PhotoAPI, [String]) async throws -> Void,
+                          thenRemove: @escaping () -> Bool) {
+        let ids = Array(selection)
+        guard !ids.isEmpty else { return }
+        endSelection()
+        Task { [api] in
+            do {
+                try await call(api, ids)
+                if thenRemove() {
+                    items.removeAll { ids.contains($0.id) }
+                    total = max(0, total - ids.count)
+                }
             } catch { actionFailed(error) }
         }
     }

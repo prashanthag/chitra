@@ -18,7 +18,9 @@ import Foundation
  A release build ignores all of it.
  */
 enum DebugHooks {
-    /// Filter the gallery should open on, and a screen to push at launch.
+    /// Filter the library should open on, and where to start: a tab
+    /// ("memories", "albums", "search") or a screen pushed inside one
+    /// ("settings", "people", "map").
     static var initialFilter: Filter?
     static var initialRoute: String?
 

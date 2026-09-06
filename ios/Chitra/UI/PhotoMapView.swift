@@ -1,36 +1,43 @@
 import SwiftUI
 import MapKit
 
-/// Every geotagged photo as a pin. The Android client used osmdroid; here
-/// MapKit does the same job with no tile-source setup.
+/// Places: every geotagged photo as a thumbnail pin. The Android client used
+/// osmdroid; MapKit does the same job with no tile-source setup.
 struct PhotoMapView: View {
     let serverURL: String
-    var onMarkerTap: (LocationItem) -> Void
 
     @State private var locations: [LocationItem]?
     @State private var error: String?
     @State private var camera: MapCameraPosition = .automatic
+    @State private var viewer: ViewerPresentation?
 
     var body: some View {
         Group {
             if let error {
-                Text("Error: \(error)").foregroundStyle(Palette.error)
+                ContentUnavailableView {
+                    Label("Can't Load Places", systemImage: "map")
+                } description: {
+                    Text(error).font(.caption)
+                }
             } else if locations == nil {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView()
             } else if locations!.isEmpty {
-                Text("No GPS-tagged photos yet")
-                    .foregroundStyle(Palette.secondaryText)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView("No Places Yet", systemImage: "mappin.slash",
+                                       description: Text("Nothing in the library carries GPS coordinates."))
             } else {
                 Map(position: $camera) {
                     ForEach(locations!) { location in
                         Annotation(location.name,
                                    coordinate: CLLocationCoordinate2D(latitude: location.lat, longitude: location.lng)) {
-                            Button { onMarkerTap(location) } label: {
+                            Button {
+                                viewer = ViewerPresentation(
+                                    index: 0,
+                                    snapshot: [MediaItem(id: location.id, name: location.name, kind: location.kind)])
+                            } label: {
                                 RemoteImage(url: Urls.thumb(serverURL, location.id, w: 160))
-                                    .frame(width: 44, height: 44)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 2))
+                                    .frame(width: 46, height: 46)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white, lineWidth: 2))
                                     .shadow(radius: 3)
                             }
                             .buttonStyle(.plain)
@@ -39,19 +46,22 @@ struct PhotoMapView: View {
                 }
             }
         }
-        .navigationTitle("Map · \(locations.map { "\($0.count)" } ?? "…") geotagged")
+        .navigationTitle("Places")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
+        .task(id: serverURL) {
             do {
                 let fetched = try await PhotoAPI(baseUrl: serverURL).locations()
                 locations = fetched
-                // Fit the view to every pin, the way the Android map does.
-                if let region = boundingRegion(fetched) {
-                    camera = .region(region)
-                }
+                // Frame every pin, the way the Android map fits its bounding box.
+                if let region = boundingRegion(fetched) { camera = .region(region) }
             } catch {
                 self.error = error.localizedDescription
             }
+        }
+        .fullScreenCover(item: $viewer) { presentation in
+            ViewerView(items: presentation.snapshot ?? [],
+                       initialIndex: presentation.index,
+                       serverURL: serverURL)
         }
     }
 

@@ -1,26 +1,30 @@
 import SwiftUI
 
-/// The month-sectioned tile grid shared by the main feed, folder albums and
-/// manual albums.
-struct GalleryGrid: View {
+/// The month-sectioned tile grid shared by the library, albums and search.
+/// Edge-to-edge, three-ish columns, pinned month headers — the shape Photos
+/// uses, rather than the padded card grid the Android client draws.
+struct GalleryGrid<Menu: View>: View {
     let items: [MediaItem]
     let serverURL: String
     var uploadsFeed = false
+    /// Non-nil puts the grid in selection mode: tiles show a check and the
+    /// tap handler toggles instead of opening the viewer.
+    var selection: Set<String>?
     var onItemTap: (MediaItem) -> Void
     var onLoadMore: () -> Void = {}
+    @ViewBuilder var menu: (MediaItem) -> Menu
 
     /// Tiles are laid out at a size we compute rather than with an adaptive
     /// GridItem: an adaptive column leaves the row height to the cell, and a
     /// 1:1 aspect ratio inside a lazy grid resolves against an unbounded
     /// height proposal, which stretched every thumbnail into a portrait.
-    private static let minimumTile: CGFloat = 110
-    private static let spacing: CGFloat = 2
+    private static var minimumTile: CGFloat { 110 }
+    private static var spacing: CGFloat { 2 }
 
     var body: some View {
         GeometryReader { geometry in
-            let available = geometry.size.width - Self.spacing * 2
-            let columns = max(1, Int(available / Self.minimumTile))
-            let tile = (available - Self.spacing * CGFloat(columns - 1)) / CGFloat(columns)
+            let columns = max(1, Int(geometry.size.width / Self.minimumTile))
+            let tile = (geometry.size.width - Self.spacing * CGFloat(columns - 1)) / CGFloat(columns)
             ScrollView {
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.fixed(tile), spacing: Self.spacing), count: columns),
@@ -30,25 +34,39 @@ struct GalleryGrid: View {
                     ForEach(gallerySections(items, uploadsFeed: uploadsFeed)) { section in
                         Section {
                             ForEach(section.items) { item in
-                                Tile(item: item, serverURL: serverURL, size: tile)
+                                Tile(item: item,
+                                     serverURL: serverURL,
+                                     size: tile,
+                                     selected: selection.map { $0.contains(item.id) })
                                     .onTapGesture { onItemTap(item) }
+                                    .contextMenu { if selection == nil { menu(item) } }
                                     .onAppear {
                                         if item.id == items[max(0, items.count - 20)].id { onLoadMore() }
                                     }
                             }
                         } header: {
                             Text(section.label)
-                                .font(.subheadline)
+                                .font(.title3.weight(.semibold))
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
+                                .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
-                                .background(.ultraThinMaterial)
+                                .background(.bar)
                         }
                     }
                 }
-                .padding(Self.spacing)
             }
         }
+    }
+}
+
+extension GalleryGrid where Menu == EmptyView {
+    init(items: [MediaItem], serverURL: String, uploadsFeed: Bool = false,
+         selection: Set<String>? = nil,
+         onItemTap: @escaping (MediaItem) -> Void,
+         onLoadMore: @escaping () -> Void = {}) {
+        self.init(items: items, serverURL: serverURL, uploadsFeed: uploadsFeed,
+                  selection: selection, onItemTap: onItemTap, onLoadMore: onLoadMore,
+                  menu: { _ in EmptyView() })
     }
 }
 
@@ -58,6 +76,8 @@ struct Tile: View {
     /// The grid hands down an exact square. A flexible frame here lets the
     /// filled image decide the width and the row spills across its neighbours.
     let size: CGFloat
+    /// nil when the grid is not in selection mode.
+    var selected: Bool?
 
     var body: some View {
         RemoteImage(url: Urls.thumb(serverURL, item.id, version: item.editVersion))
@@ -69,68 +89,31 @@ struct Tile: View {
                     Image(systemName: "play.fill")
                         .font(.system(size: 10))
                         .foregroundStyle(.white)
-                        .padding(4)
-                        .background(Color.black.opacity(0.65), in: Circle())
-                        .padding(4)
+                        .shadow(radius: 2)
+                        .padding(5)
                 }
             }
-            .overlay(alignment: .topLeading) {
+            .overlay(alignment: .bottomLeading) {
                 if item.isFavorite {
                     Image(systemName: "heart.fill")
                         .font(.system(size: 11))
-                        .foregroundStyle(Palette.favorite)
-                        .padding(4)
+                        .foregroundStyle(.white)
+                        .shadow(radius: 2)
+                        .padding(5)
+                }
+            }
+            .overlay {
+                if selected == true { Color.black.opacity(0.25) }
+            }
+            .overlay(alignment: .topTrailing) {
+                if let selected {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, selected ? Color.accentColor : Color.black.opacity(0.25))
+                        .padding(5)
                 }
             }
             .background(Palette.tile)
-    }
-}
-
-/// "On this day" strip above the feed, one card per year that has photos.
-struct MemoriesRow: View {
-    let memories: Memories
-    let serverURL: String
-    var onTap: (MediaItem) -> Void
-
-    private var currentYear: Int { Calendar.current.component(.year, from: Date()) }
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Memories").font(.subheadline)
-                    Text(memories.monthDay)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Palette.secondaryText)
-                }
-                .padding(.trailing, 4)
-
-                ForEach(memories.groups) { group in
-                    if let first = group.items.first {
-                        let years = currentYear - (Int(group.year) ?? currentYear)
-                        Button {
-                            onTap(first)
-                        } label: {
-                            RemoteImage(url: Urls.thumb(serverURL, first.id, version: first.editVersion))
-                                .frame(width: 84, height: 110)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(alignment: .bottomLeading) {
-                                    Text(years > 0 ? "\(years) yr ago" : group.year)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 3)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(Color.black.opacity(0.67))
-                                }
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        }
     }
 }

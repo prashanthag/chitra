@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Face clusters from the server's face indexer, as circular tiles.
+/// Face clusters from the server's indexer, as the circular tiles Photos uses
+/// for People.
 struct PeopleView: View {
     let serverURL: String
     var onCluster: (Cluster) -> Void
@@ -9,31 +10,27 @@ struct PeopleView: View {
     @State private var status: FacesStatus?
     @State private var error: String?
 
-    private let columns = [GridItem(.adaptive(minimum: 96), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 16)]
 
     var body: some View {
         Group {
             if let error {
-                Text("Error: \(error)")
-                    .foregroundStyle(Palette.error)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if clusters == nil {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if clusters!.isEmpty {
-                VStack(spacing: 6) {
-                    Text("No people yet").font(.headline)
-                    Text("Run face indexing on the server, then come back.")
-                        .font(.caption)
-                        .foregroundStyle(Palette.secondaryText)
+                ContentUnavailableView {
+                    Label("Can't Load People", systemImage: "person.crop.circle.badge.exclamationmark")
+                } description: {
+                    Text(error).font(.caption)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(24)
+            } else if clusters == nil {
+                ProgressView()
+            } else if clusters!.isEmpty {
+                ContentUnavailableView("No People Yet", systemImage: "person.2",
+                                       description: Text("Run face_indexer.py on the server, then come back."))
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(clusters!) { cluster in
                             Button { onCluster(cluster) } label: {
-                                VStack(spacing: 4) {
+                                VStack(spacing: 6) {
                                     Color.clear
                                         .aspectRatio(1, contentMode: .fit)
                                         .overlay { RemoteImage(url: Urls.clusterThumb(serverURL, cluster.id)) }
@@ -41,32 +38,26 @@ struct PeopleView: View {
                                         .clipShape(Circle())
                                     Text(cluster.name ?? "\(cluster.count) photos")
                                         .font(.caption)
-                                        .foregroundStyle(Color(white: 0.83))
                                         .lineLimit(1)
                                 }
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(12)
+                    .padding(16)
+
+                    if let status {
+                        Text("\(status.clusters) groups · \(status.faces) faces · \(status.processed) of \(status.totalPhotos) photos processed")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 24)
+                    }
                 }
             }
         }
         .navigationTitle("People")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if let status {
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 1) {
-                        Text("People").font(.headline)
-                        Text("\(status.clusters) groups · \(status.faces) faces · \(status.processed)/\(status.totalPhotos) processed")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Palette.secondaryText)
-                    }
-                }
-            }
-        }
-        .task {
+        .task(id: serverURL) {
             do {
                 let api = PhotoAPI(baseUrl: serverURL)
                 status = try await api.facesStatus()
@@ -78,42 +69,33 @@ struct PeopleView: View {
     }
 }
 
-/// Every photo in one face cluster — a flat grid, no month headers, matching
-/// the Android cluster screen.
+/// Every photo in one face cluster.
 struct ClusterMediaView: View {
     let cluster: Cluster
     let serverURL: String
-    var onItemTap: ([MediaItem], Int) -> Void
+    var onAlbumChanged: () -> Void
 
     @State private var items: [MediaItem]?
     @State private var error: String?
+    @State private var viewer: ViewerPresentation?
 
     var body: some View {
         Group {
             if let error {
-                Text("Error: \(error)").foregroundStyle(Palette.error)
+                ContentUnavailableView {
+                    Label("Can't Load Photos", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error).font(.caption)
+                }
             } else if let items {
-                GeometryReader { geometry in
-                    let available = geometry.size.width - 4
-                    let columns = max(1, Int(available / 110))
-                    let tile = (available - 2 * CGFloat(columns - 1)) / CGFloat(columns)
-                    ScrollView {
-                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: 2), count: columns), spacing: 2) {
-                            ForEach(items) { item in
-                                Tile(item: item, serverURL: serverURL, size: tile)
-                                    .onTapGesture {
-                                        onItemTap(items, items.firstIndex(of: item) ?? 0)
-                                    }
-                            }
-                        }
-                        .padding(2)
-                    }
+                GalleryGrid(items: items, serverURL: serverURL) { item in
+                    viewer = ViewerPresentation(index: items.firstIndex(of: item) ?? 0, snapshot: items)
                 }
             } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView()
             }
         }
-        .navigationTitle(cluster.name ?? "Person \(cluster.id) · \(cluster.count) photos")
+        .navigationTitle(cluster.name ?? "Person \(cluster.id)")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             do {
@@ -121,6 +103,12 @@ struct ClusterMediaView: View {
             } catch {
                 self.error = error.localizedDescription
             }
+        }
+        .fullScreenCover(item: $viewer) { presentation in
+            ViewerView(items: presentation.snapshot ?? [],
+                       initialIndex: presentation.index,
+                       serverURL: serverURL,
+                       onAlbumChanged: onAlbumChanged)
         }
     }
 }
