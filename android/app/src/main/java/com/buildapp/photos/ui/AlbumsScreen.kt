@@ -130,15 +130,14 @@ fun AlbumsScreen(
                     items(mine, key = { "u${it.id}" }) { a ->
                         UserAlbumTile(a, serverUrl, onClick = { onUserAlbumSelected(a) })
                     }
-                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Folders") }
                     val phone = albums!!.filter { it.folder != null }
                     if (phone.isNotEmpty()) {
                         item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Phone folders") }
                         items(phone, key = { it.key }) { a ->
                             AlbumTile(a, serverUrl, api, onClick = { onAlbumSelected(a) })
                         }
-                        item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Folders") }
                     }
+                    item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("Folders") }
                     items(albums!!.filter { it.folder == null }, key = { it.key }) { a ->
                         AlbumTile(a, serverUrl, api, onClick = { onAlbumSelected(a) })
                     }
