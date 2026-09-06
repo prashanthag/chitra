@@ -3,6 +3,14 @@
 #
 # face_indexer.py — face detection + clustering -> People tab
 insightface==1.0.1
+# GPU builds are drop-in replacements for the same `onnxruntime` module, so
+# install exactly one of these. face_indexer picks the best provider at runtime
+# and falls back to CPU, so any of them works:
+#   NVIDIA : onnxruntime-gpu        AMD/ROCm : onnxruntime-rocm
+#   Windows: onnxruntime-directml   Intel    : onnxruntime-openvino
+# Switching builds? uninstall the old one AND delete
+# site-packages/onnxruntime/ first — they share a module directory and a
+# half-removed one leaves an importable but broken namespace package.
 onnxruntime==1.27.0
 opencv-python-headless==4.13.0.92
 scikit-learn==1.9.0

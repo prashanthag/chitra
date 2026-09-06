@@ -115,6 +115,12 @@ def index_all(conn: sqlite3.Connection) -> None:
 
 
 def main() -> None:
+    # Indexing must never starve the web server: drop CPU priority (threads
+    # spawned later inherit it).
+    try:
+        os.nice(10)
+    except (OSError, AttributeError):
+        pass
     if not DB_PATH.exists():
         print(f"index db not found: {DB_PATH}")
         sys.exit(1)

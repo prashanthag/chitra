@@ -27,6 +27,7 @@ os.makedirs(os.path.join(MEDIA, "uploads", "2026-08-08"))
 os.environ["PHOTO_ROOT"] = MEDIA
 os.environ["CACHE_DIR"] = CACHE
 os.environ["CHITRA_READONLY"] = "0"
+os.environ["LOG_REQUESTS"] = "0"
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -71,6 +72,801 @@ def id_of(name):
     row = conn.execute("SELECT id FROM media WHERE name=?", (name,)).fetchone()
     conn.close()
     return row[0]
+
+
+def _drop_clusters_table():
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    conn.execute("DROP TABLE IF EXISTS clusters")
+    conn.commit()
+    conn.close()
+
+
+def _drop_clip_embedding():
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    conn.execute("ALTER TABLE media DROP COLUMN clip_embedding")
+    conn.commit()
+    conn.close()
+
+
+class UserAlbumTests(unittest.TestCase):
+    def _mk(self, name, ids=()):
+        r = client.post("/api/user_albums", json={"name": name, "media_ids": list(ids)})
+        self.assertEqual(r.status_code, 200, r.data)
+        return r.get_json()["album"]
+
+    def test_create_add_remove_cover_rename_delete(self):
+        one, two, up = id_of("one.jpg"), id_of("two.jpg"), id_of("up.jpg")
+        a = self._mk("Diwali", [one])
+        self.addCleanup(lambda: client.delete(f"/api/user_albums/{a['id']}"))
+        self.assertEqual((a["name"], a["count"], a["cover"]), ("Diwali", 1, one))
+
+        r = client.post(f"/api/user_albums/{a['id']}/items", json={"ids": [two, up, one, "nope"]})
+        self.assertEqual(r.get_json()["added"], 2)          # one was already in, nope is not media
+        items = client.get(f"/api/user_albums/{a['id']}/media").get_json()
+        self.assertEqual({i["id"] for i in items}, {one, two, up})
+        self.assertTrue(all("edit_version" in i and "favorite" in i for i in items))
+
+        # Membership flag for a picker, and the album listing.
+        lst = client.get("/api/user_albums", query_string={"media_id": two}).get_json()
+        self.assertEqual([x["contains"] for x in lst if x["id"] == a["id"]], [True])
+
+        # Cover must be a member; rename sticks.
+        self.assertEqual(client.post(f"/api/user_albums/{a['id']}", json={"cover_id": "nope"}).status_code, 400)
+        r = client.post(f"/api/user_albums/{a['id']}", json={"cover_id": up, "name": "Diwali 2025"}).get_json()["album"]
+        self.assertEqual((r["cover"], r["name"]), (up, "Diwali 2025"))
+
+        r = client.delete(f"/api/user_albums/{a['id']}/items", json={"ids": [up]}).get_json()
+        self.assertEqual(r["removed"], 1)
+        self.assertNotEqual(r["album"]["cover"], up)      # cover falls back to a live member
+
+        # Trashed members disappear from the album without being removed.
+        client.post(f"/api/media/{two}/trash")
+        self.addCleanup(lambda: client.post(f"/api/media/{two}/restore"))
+        self.assertEqual(client.get(f"/api/user_albums/{a['id']}").get_json()["count"], 1)
+
+        self.assertEqual(client.delete(f"/api/user_albums/{a['id']}").status_code, 200)
+        self.assertEqual(client.get(f"/api/user_albums/{a['id']}").status_code, 404)
+
+    def test_public_album_link_is_scoped_to_its_members(self):
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        a = self._mk("Shared", [one])
+        self.addCleanup(lambda: client.delete(f"/api/user_albums/{a['id']}"))
+        tok = client.post(f"/api/user_albums/{a['id']}/share").get_json()["token"]
+        self.assertEqual(client.post(f"/api/user_albums/{a['id']}/share").get_json()["token"], tok)
+
+        page = client.get(f"/s/a/{tok}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(f"/s/a/{tok}/thumb/{one}", page.get_data(as_text=True))
+        self.assertEqual(client.get(f"/s/a/{tok}/thumb/{one}").status_code, 200)
+        self.assertEqual(client.get(f"/s/a/{tok}/file/{one}").status_code, 200)
+        # An item outside the album is not reachable through this token.
+        self.assertEqual(client.get(f"/s/a/{tok}/file/{two}").status_code, 404)
+        self.assertEqual(client.get(f"/s/a/{tok}/thumb/{two}").status_code, 404)
+
+        client.delete(f"/api/user_albums/{a['id']}/share")
+        self.assertEqual(client.get(f"/s/a/{tok}").status_code, 404)
+
+    def test_albums_are_allowed_in_safe_mode(self):
+        old = chitra.READ_ONLY
+        chitra.READ_ONLY = True
+        self.addCleanup(lambda: setattr(chitra, "READ_ONLY", old))
+        r = client.post("/api/user_albums", json={"name": "Safe"})
+        self.assertEqual(r.status_code, 200)
+        client.delete(f"/api/user_albums/{r.get_json()['album']['id']}")
+
+
+class AccountsAndLockTests(unittest.TestCase):
+    """Accounts switch the server from open to login-only; a user's Locked
+    folder hides items from every listing and every other account."""
+
+    def setUp(self):
+        self.admin = chitra.app.test_client()
+        self.member = chitra.app.test_client()
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET private_to = NULL")
+        conn.execute("UPDATE albums SET private_to = NULL")
+        conn.execute("DELETE FROM album_media")
+        conn.execute("DELETE FROM albums")
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+
+    def _names(self, c, **q):
+        r = c.get("/api/media", query_string={"per_page": 200, **q})
+        self.assertEqual(r.status_code, 200, r.data)
+        return [i["name"] for i in r.get_json()["items"]]
+
+    def test_bootstrap_login_roles_and_locked_folder(self):
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        # Open server: no accounts, nothing required.
+        self.assertFalse(client.get("/api/auth/state").get_json()["auth_required"])
+        # First account is the admin, created without a login.
+        r = client.post("/api/users", json={"name": "prash", "password": "secret1", "role": "member"})
+        self.assertEqual(r.get_json()["user"]["role"], "admin")
+        # From now on the API needs a login; health and public shares stay open.
+        self.assertEqual(client.get("/api/media").status_code, 401)
+        self.assertEqual(client.get("/api/health").status_code, 200)
+        self.assertEqual(client.post("/api/login", json={"name": "prash", "password": "nope"}).status_code, 401)
+        r = self.admin.post("/api/login", json={"name": "prash", "password": "secret1"})
+        self.assertEqual(r.status_code, 200)
+        token = r.get_json()["token"]
+        self.assertIn("one.jpg", self._names(self.admin))          # cookie session
+        bearer = chitra.app.test_client()
+        r = bearer.get("/api/media", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(r.status_code, 200)                       # header session
+        # Admin creates a member; members cannot manage users.
+        self.assertEqual(self.admin.post("/api/users", json={"name": "kid", "password": "pass1", "role": "member"}).status_code, 200)
+        self.assertEqual(self.member.post("/api/login", json={"name": "kid", "password": "pass1"}).status_code, 200)
+        self.assertEqual(self.member.get("/api/users").status_code, 403)
+        self.assertEqual(len(self.admin.get("/api/users").get_json()), 2)
+
+        # A share link exists on one.jpg; locking must revoke it.
+        share = self.admin.post(f"/api/media/{one}/share").get_json()["token"]
+        self.assertEqual(client.get(f"/s/{share}").status_code, 200)
+
+        # Lock one.jpg into the admin's Locked folder.
+        r = self.admin.post("/api/media/lock", json={"ids": [one]})
+        self.assertEqual(r.get_json()["locked"], 1)
+        for c in (self.admin, self.member):
+            self.assertNotIn("one.jpg", self._names(c))
+            self.assertNotIn("one.jpg", self._names(c, q="one"))
+            self.assertEqual(c.get(f"/api/media/{one}/thumb").status_code, 404)
+            self.assertEqual(c.get(f"/api/media/{one}").status_code, 404)
+        self.assertEqual(client.get(f"/s/{share}").status_code, 404)
+        self.assertEqual(self.admin.post(f"/api/media/{one}/share").status_code, 404)
+        # Not counted anywhere either: the timeline totals exclude it.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        visible_rows = conn.execute("SELECT COUNT(*) FROM media WHERE private_to IS NULL").fetchone()[0]
+        conn.close()
+        self.assertEqual(sum(b["n"] for b in self.admin.get("/api/timeline").get_json()), visible_rows)
+        # The Locked folder needs the password again, then lists only mine.
+        self.assertEqual(self.admin.get("/api/media", query_string={"locked": 1}).status_code, 401)
+        self.assertEqual(self.admin.post("/api/locked/unlock", json={"password": "wrong"}).status_code, 403)
+        self.assertEqual(self.admin.post("/api/locked/unlock", json={"password": "secret1"}).status_code, 200)
+        self.assertTrue(self.admin.get("/api/auth/state").get_json()["unlocked"])
+        self.assertEqual(self._names(self.admin, locked=1), ["one.jpg"])
+        self.assertEqual(self.admin.get(f"/api/media/{one}/thumb").status_code, 200)
+        self.assertNotIn("one.jpg", self._names(self.admin))       # still out of the normal feed
+        # The other account sees nothing, unlocked or not.
+        self.member.post("/api/locked/unlock", json={"password": "pass1"})
+        self.assertEqual(self._names(self.member, locked=1), [])
+        self.assertEqual(self.member.get(f"/api/media/{one}/thumb").status_code, 404)
+        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).get_json()["unlocked"], 0)
+        # Re-lock the session, then unlock the item for real.
+        self.admin.post("/api/locked/lock")
+        self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)
+        self.admin.post("/api/locked/unlock", json={"password": "secret1"})
+        self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).get_json()["unlocked"], 1)
+        self.assertIn("one.jpg", self._names(self.member))
+
+        # Lock a whole album: it and its members vanish for everyone else,
+        # and reappear for the owner (with its members) once unlocked.
+        aid = self.admin.post("/api/user_albums", json={"name": "Private", "media_ids": [two]}).get_json()["album"]["id"]
+        self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/lock").status_code, 200)
+        self.assertEqual([a["id"] for a in self.member.get("/api/user_albums").get_json()], [])
+        self.assertEqual(self.member.get(f"/api/user_albums/{aid}/media").status_code, 404)
+        self.assertNotIn("two.jpg", self._names(self.member, undated=1))
+        mine = [a for a in self.admin.get("/api/user_albums").get_json() if a["id"] == aid]
+        self.assertEqual((mine[0]["locked"], mine[0]["count"]), (True, 1))
+        self.assertEqual([i["name"] for i in self.admin.get(f"/api/user_albums/{aid}/media").get_json()], ["two.jpg"])
+        self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/unlock").status_code, 200)
+        self.assertIn("two.jpg", self._names(self.member, undated=1))
+
+        # Deleting an account releases its locked items and ends its sessions.
+        kid = [u for u in self.admin.get("/api/users").get_json() if u["name"] == "kid"][0]["id"]
+        self.member.post("/api/media/lock", json={"ids": [two]})
+        self.assertEqual(self.admin.delete(f"/api/users/{kid}").status_code, 200)
+        self.assertEqual(self.member.get("/api/media").status_code, 401)
+        self.assertIn("two.jpg", self._names(self.admin, undated=1))
+
+
+class UploadSourceTests(unittest.TestCase):
+    """Backup uploads carry the phone's device name and source folder."""
+
+    def _jpeg(self, color, exif=None):
+        buf = io.BytesIO()
+        im = Image.new("RGB", (48, 48), color)
+        im.save(buf, "JPEG", **({"exif": exif.tobytes()} if exif else {}))
+        buf.seek(0)
+        return buf
+
+    def _upload(self, buf, name, **fields):
+        r = client.post("/api/upload", data={"file": (buf, name), **fields}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        self.assertTrue(item["indexed"], item)
+        self._ids.append(item["id"])
+        return item
+
+    def setUp(self):
+        self._ids = []
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._ids:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.close()
+        chitra.scan_once()
+
+    def test_folder_and_device_are_stored_and_browsable(self):
+        a = self._upload(self._jpeg((10, 20, 30)), "wa_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="WhatsApp Images")
+        b = self._upload(self._jpeg((30, 20, 10)), "cam_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Camera")
+        d = client.get(f"/api/media/{a['id']}").get_json()
+        self.assertEqual((d["source_device"], d["source_folder"]), ("Galaxy Z Fold6", "WhatsApp Images"))
+        # Filter inside the uploads album by phone folder.
+        _, names = totals(album="uploads", folder="WhatsApp Images")
+        self.assertEqual(names, ["wa_1.jpg"])
+        # Phone folders appear as albums, with covers and counts.
+        albums = client.get("/api/albums").get_json()
+        pf = {x["folder"]: x for x in albums if x.get("folder")}
+        self.assertEqual(pf["WhatsApp Images"]["count"], 1)
+        self.assertEqual(pf["WhatsApp Images"]["cover"], a["id"])
+        self.assertEqual(pf["Camera"]["device"], "Galaxy Z Fold6")
+
+    def test_exif_less_upload_is_attributed_to_the_phone(self):
+        # No camera EXIF (a download): the phone becomes the camera.
+        a = self._upload(self._jpeg((1, 1, 1)), "dl_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Download")
+        d = client.get(f"/api/media/{a['id']}").get_json()
+        self.assertEqual((d["camera_make"], d["camera_model"]), ("samsung", "Galaxy Z Fold6"))
+        # Real camera EXIF wins over the phone name.
+        exif = Image.Exif()
+        exif[271], exif[272] = "Canon", "EOS R6"
+        b = self._upload(self._jpeg((2, 2, 2), exif), "canon_1.jpg", device="Galaxy Z Fold6", device_make="samsung", folder="Download")
+        d = client.get(f"/api/media/{b['id']}").get_json()
+        self.assertEqual((d["camera_make"], d["camera_model"]), ("Canon", "EOS R6"))
+        # Web drag-and-drop sends nothing: no camera, no folder.
+        c = self._upload(self._jpeg((3, 3, 3)), "web_1.jpg")
+        d = client.get(f"/api/media/{c['id']}").get_json()
+        self.assertIsNone(d["camera_model"])
+        self.assertIsNone(d["source_folder"])
+
+
+class UploadFilingTests(unittest.TestCase):
+    """Uploads with a known camera go into "<camera>/<YYYY>/<MM-Mon>/" like
+    the rest of the library; unknown ones stay in uploads/."""
+
+    def _jpeg(self, make=None, model=None, when=None, color=(9, 9, 9)):
+        buf = io.BytesIO()
+        exif = Image.Exif()
+        if make:
+            exif[271] = make
+        if model:
+            exif[272] = model
+        if when:
+            exif[306] = when
+        Image.new("RGB", (40, 40), color).save(buf, "JPEG", exif=exif.tobytes())
+        buf.seek(0)
+        return buf
+
+    def setUp(self):
+        self._ids = []
+
+    def tearDown(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._ids:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.execute("DELETE FROM favorites WHERE media_id IN (%s)" % ",".join("?" * len(self._ids)), self._ids) if self._ids else None
+        conn.commit()
+        conn.close()
+        chitra.scan_once()
+
+    def _upload(self, buf, name, **fields):
+        r = client.post("/api/upload", data={"file": (buf, name), **fields}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        self._ids.append(item["id"])
+        return client.get(f"/api/media/{item['id']}").get_json()
+
+    def test_camera_dir_names_match_the_library(self):
+        self.assertEqual(chitra.camera_dir_name("samsung", "Galaxy Z Fold6"), "samsung Galaxy Z Fold6")
+        self.assertEqual(chitra.camera_dir_name("Canon", "Canon EOS 5D Mark IV"), "Canon EOS 5D Mark IV")
+        self.assertEqual(chitra.camera_dir_name("Apple", "iPhone 13 mini"), "Apple iPhone 13 mini")
+        self.assertEqual(chitra.camera_dir_name(None, "NIKON D90"), "NIKON D90")
+        self.assertIsNone(chitra.camera_dir_name(None, None))
+        self.assertEqual(chitra.camera_dir_name("samsung", "\x02"), "samsung")   # junk model
+        self.assertEqual(chitra.organized_dir("samsung", "Galaxy Z Fold6", 1715763600.0), "samsung Galaxy Z Fold6/2024/05-May")
+
+    def test_exif_camera_upload_is_filed_by_camera_year_month(self):
+        d = self._upload(self._jpeg("samsung", "Galaxy Z Fold6", "2024:05:15 10:00:00"), "filed.jpg",
+                         device="Galaxy Z Fold6", device_make="samsung", folder="Camera")
+        rel = os.path.relpath(d["path"], MEDIA).split(os.sep)
+        self.assertEqual(rel, ["samsung Galaxy Z Fold6", "2024", "05-May", "filed.jpg"])
+        self.assertEqual(d["album"], "samsung Galaxy Z Fold6")
+        self.assertEqual(d["uploaded"], 1)
+        # In the plain feed (it is a library photo now) and in the uploads feed.
+        _, plain = totals()
+        self.assertIn("filed.jpg", plain)
+        _, ups = totals(album="uploads")
+        self.assertIn("filed.jpg", ups)
+
+    def test_phone_attributed_upload_is_filed_under_the_phone(self):
+        d = self._upload(self._jpeg(when="2023:01:02 09:00:00"), "wa.jpg",
+                         device="Galaxy Z Fold6", device_make="samsung", folder="WhatsApp Images")
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep)[:3], ["samsung Galaxy Z Fold6", "2023", "01-Jan"])
+        _, names = totals(album="uploads", folder="WhatsApp Images")
+        self.assertIn("wa.jpg", names)
+
+    def test_unknown_upload_stays_in_uploads_folder(self):
+        d = self._upload(self._jpeg(), "mystery.jpg")
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep)[0], "uploads")
+        self.assertEqual(d["album"], "uploads")
+        _, plain = totals()
+        self.assertNotIn("mystery.jpg", plain)
+
+    def test_organize_moves_legacy_uploads_and_keeps_ids(self):
+        # A file that landed in uploads/ before filing existed, with camera EXIF.
+        legacy_dir = os.path.join(MEDIA, "uploads", "2026-08-08")
+        os.makedirs(legacy_dir, exist_ok=True)
+        path = os.path.join(legacy_dir, "legacy.jpg")
+        with open(path, "wb") as f:
+            f.write(self._jpeg("Apple", "iPhone 13 mini", "2022:07:04 12:00:00").getvalue())
+        chitra.scan_once()
+        mid = id_of("legacy.jpg")
+        self._ids.append(mid)
+        client.post(f"/api/media/{mid}/favorite")
+        # Keep the shared fixture (up.jpg, camera TestFold) out of the pass.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET camera_model = NULL WHERE name='up.jpg'")
+        conn.commit()
+        conn.close()
+        self.addCleanup(lambda: (lambda c: (c.execute("UPDATE media SET camera_model='TestFold' WHERE name='up.jpg'"), c.commit(), c.close()))(chitra.sqlite3.connect(chitra.DB_PATH)))
+        chitra.organize_uploads()
+        d = client.get(f"/api/media/{mid}").get_json()
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep), ["Apple iPhone 13 mini", "2022", "07-Jul", "legacy.jpg"])
+        self.assertTrue(os.path.exists(d["path"]))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual((d["album"], d["uploaded"]), ("Apple iPhone 13 mini", 1))
+        _, favs = totals(favorites=1)
+        self.assertIn("legacy.jpg", favs)
+        # A rescan sees the moved file as the same item: no new row, same id.
+        chitra.scan_once()
+        self.assertEqual(id_of("legacy.jpg"), mid)
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM media WHERE name='legacy.jpg'").fetchone()[0], 1)
+        conn.close()
+
+
+class VideoPlaybackTests(unittest.TestCase):
+    """/play sends a client to the original only when it can carry it."""
+
+    @classmethod
+    def _clip(cls, name, size, vcodec="libx264", extra=()):
+        import subprocess
+        path = os.path.join(MEDIA, "CameraX", name)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"testsrc=duration=1:size={size}:rate=10", "-c:v", vcodec,
+                        "-pix_fmt", "yuv420p", *extra, path], check=True)
+        return path
+
+    def setUp(self):
+        self.paths = [self._clip("play_small.mp4", "320x240"),
+                      self._clip("play_tall.mp4", "320x1440"),
+                      self._clip("play_hevc.mp4", "320x240", "libx265", ["-tag:v", "hvc1"])]
+        chitra.scan_once()
+
+    def tearDown(self):
+        for p in self.paths:
+            os.remove(p)
+        chitra.scan_once()
+
+    def _play(self, name, codecs=None):
+        q = {"codecs": codecs} if codecs else {}
+        r = client.get(f"/api/media/{id_of(name)}/play", query_string=q)
+        self.assertEqual(r.status_code, 302)
+        return r.headers["Location"].rsplit("/", 1)[-1], r.headers["X-Chitra-Play"]
+
+    def test_scan_records_video_stream_facts(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        row = conn.execute("SELECT codec, bitrate, width, height FROM media WHERE name='play_tall.mp4'").fetchone()
+        conn.close()
+        self.assertEqual((row[0], row[2], row[3]), ("h264", 320, 1440))
+        self.assertGreater(row[1], 0)
+
+    def test_direct_only_for_decodable_1080p_or_less(self):
+        self.assertEqual(self._play("play_small.mp4"), ("full", "direct"))
+        self.assertEqual(self._play("play_tall.mp4"), ("stream.mp4", "transcode"))   # taller than 1080p
+        self.assertEqual(self._play("play_hevc.mp4"), ("stream.mp4", "transcode"))   # client did not claim hevc
+        self.assertEqual(self._play("play_hevc.mp4", "h264,hevc"), ("full", "direct"))
+
+    def test_bitrate_ceiling(self):
+        old = chitra.DIRECT_PLAY_MAX_BITRATE
+        chitra.DIRECT_PLAY_MAX_BITRATE = 1   # anything is "too fast for Wi-Fi"
+        self.addCleanup(lambda: setattr(chitra, "DIRECT_PLAY_MAX_BITRATE", old))
+        self.assertEqual(self._play("play_small.mp4"), ("stream.mp4", "transcode"))
+
+    def test_transcode_args_cap_at_1080p_on_every_backend(self):
+        import gpu
+        for backend in (gpu.NVIDIA, gpu.CPU, gpu.QSV, gpu.VAAPI):
+            _, out = gpu.transcode_args(backend)
+            self.assertIn("min(1080,ih)", " ".join(out), backend)
+        self.assertIn("scale_cuda", " ".join(gpu.transcode_args(gpu.NVIDIA)[1]))
+
+    def test_stream_transcode_produces_playable_mp4(self):
+        r = client.get(f"/api/media/{id_of('play_tall.mp4')}/stream.mp4")
+        self.assertEqual(r.status_code, 200)
+        data = r.get_data()
+        self.assertGreater(len(data), 1000)
+        self.assertIn(b"ftyp", data[:64])
+
+    def test_stream_drops_data_tracks(self):
+        # A source with a timed-metadata data track (DJI/GoPro style) must
+        # come out as video (+ audio) only: ExoPlayer refuses unknown tracks.
+        import subprocess, tempfile
+        path = os.path.join(MEDIA, "CameraX", "play_meta.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+                        "-map", "0:v", "-map", "1:a", "-map", "2:v",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+        self.addCleanup(lambda: (os.remove(path), chitra.scan_once()))
+        chitra.scan_once()
+        r = client.get(f"/api/media/{id_of('play_meta.mp4')}/stream.mp4")
+        self.assertEqual(r.status_code, 200)
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            f.write(r.get_data())
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+                              "-of", "csv=p=0", f.name], capture_output=True, text=True).stdout.split()
+        os.remove(f.name)
+        self.assertEqual(sorted(out), ["audio", "video"])
+
+
+class ClusterMergeTests(unittest.TestCase):
+    def _setup(self):
+        import numpy as np
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER, centroid BLOB)")
+        conn.execute("CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY,"
+                     " media_id TEXT, bbox TEXT, score REAL, embedding BLOB, cluster_id INTEGER)")
+        conn.execute("DELETE FROM faces")
+        one, two = id_of("one.jpg"), id_of("two.jpg")
+        e1 = np.array([1, 0, 0, 0], dtype=np.float32).tobytes()
+        e2 = np.array([0, 1, 0, 0], dtype=np.float32).tobytes()
+        conn.executemany("INSERT INTO faces (id, media_id, bbox, score, embedding, cluster_id) VALUES (?,?,?,?,?,?)", [
+            (101, one, "1,1,9,9", 0.9, e1, 11), (102, one, "2,2,9,9", 0.5, e1, 11),
+            (103, two, "1,1,9,9", 0.99, e2, 12),
+        ])
+        conn.executemany("INSERT OR REPLACE INTO clusters (id, name, count, rep_face_id) VALUES (?,?,?,?)",
+                         [(11, "Ina", 2, 101), (12, None, 1, 103)])
+        conn.commit()
+        conn.close()
+
+        def cleanup():
+            c = chitra.sqlite3.connect(chitra.DB_PATH)
+            c.execute("DELETE FROM faces")
+            c.commit()
+            c.close()
+            _drop_clusters_table()
+        self.addCleanup(cleanup)
+
+    def test_merge_endpoint_moves_faces_and_recomputes_the_group(self):
+        import numpy as np
+        self._setup()
+        r = client.post("/api/clusters/12/merge", json={"into": 11})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["cluster"], {"id": 11, "name": "Ina", "count": 3})
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM faces WHERE cluster_id=11").fetchone()[0], 3)
+        self.assertIsNone(conn.execute("SELECT 1 FROM clusters WHERE id=12").fetchone())
+        rep, cent = conn.execute("SELECT rep_face_id, centroid FROM clusters WHERE id=11").fetchone()
+        conn.close()
+        self.assertEqual(rep, 103)   # the best-scoring face now leads the group
+        c = np.frombuffer(cent, dtype=np.float32)
+        self.assertAlmostEqual(float(np.linalg.norm(c)), 1.0, places=5)
+        self.assertGreater(c[0], c[1])   # two faces along e1, one along e2
+        self.assertEqual(client.post("/api/clusters/12/merge", json={"into": 11}).status_code, 404)
+        self.assertEqual(client.post("/api/clusters/11/merge", json={"into": 11}).status_code, 400)
+
+    def test_naming_a_group_after_an_existing_person_merges_them(self):
+        self._setup()
+        r = client.post("/api/clusters/12/name", json={"name": "ina"}).get_json()
+        self.assertEqual(r["merged_into"], 11)
+        ids = [(c["id"], c["name"], c["count"]) for c in client.get("/api/clusters").get_json()]
+        self.assertEqual(ids, [(11, "Ina", 3)])
+        # A genuinely new name still just renames.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("INSERT INTO clusters (id, name, count) VALUES (13, NULL, 1)")
+        conn.commit()
+        conn.close()
+        self.assertNotIn("merged_into", client.post("/api/clusters/13/name", json={"name": "Bala"}).get_json())
+
+
+class PeopleOrderTests(unittest.TestCase):
+    def test_named_groups_first_alphabetically_then_unnamed_by_size(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.executemany("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (?,?,?)", [
+            (1, None, 50), (2, "Zara", 3), (3, "", 40), (4, "anita", 9), (5, "Bala", 20), (6, None, 60),
+        ])
+        conn.commit()
+        conn.close()
+        self.addCleanup(_drop_clusters_table)
+        ids = [c["id"] for c in client.get("/api/clusters").get_json()]
+        self.assertEqual(ids, [4, 5, 2, 6, 1, 3])
+
+
+class ContentHashTests(unittest.TestCase):
+    """De-duplication by content, not by file name."""
+
+    def _jpeg(self, color, size=(32, 32)):
+        buf = io.BytesIO()
+        Image.new("RGB", size, color).save(buf, "JPEG")
+        buf.seek(0)
+        return buf
+
+    def _upload(self, buf, name):
+        r = client.post("/api/upload", data={"file": (buf, name)}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        item = r.get_json()["items"][0]
+        if not item.get("duplicate"):
+            self._uploaded.append(item["id"])
+        return item
+
+    def setUp(self):
+        self._uploaded = []
+
+    def tearDown(self):
+        # Leave the uploads album as the fixture library expects it.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for mid in self._uploaded:
+            row = conn.execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+        conn.close()
+        if self._uploaded:
+            chitra.scan_once()
+
+    def test_quick_hash_vectors_match_the_android_implementation(self):
+        # Same vectors as ContentHashTest.kt: the two sides must agree bit for bit.
+        big = bytes(i % 251 for i in range(3_000_000))
+        self.assertEqual(chitra.quick_hash(io.BytesIO(big), len(big)),
+                         "c0cf07b6c7a6aeb7bf336a2af9c5dc04364500e6a65b1249eb5b2e78be8ccf3e")
+        self.assertEqual(chitra.quick_hash(io.BytesIO(b"hello chitra"), 12),
+                         "a5c35e5d848a9c891a479ebaeb7083b71e8bee487416b56f2333dca466e9f7e6")
+
+    def test_renamed_copy_is_a_duplicate_and_same_name_different_bytes_is_not(self):
+        first = self._upload(self._jpeg((1, 2, 3)), "hash_a.jpg")
+        self.assertFalse(first.get("duplicate"))
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        h = conn.execute("SELECT content_hash FROM media WHERE id=?", (first["id"],)).fetchone()[0]
+        conn.close()
+        self.assertRegex(h, r"^[0-9a-f]{64}$")
+
+        # Same bytes under another name: the old name+size rule would have
+        # stored a second copy.
+        again = self._upload(self._jpeg((1, 2, 3)), "renamed_copy.jpg")
+        self.assertTrue(again["duplicate"])
+        self.assertEqual(again["id"], first["id"])
+
+        # Same name and byte size, different content: a real second file.
+        other = self._jpeg((3, 2, 1))
+        self.assertEqual(len(other.getvalue()), len(self._jpeg((1, 2, 3)).getvalue()))
+        third = self._upload(other, "hash_a.jpg")
+        self.assertFalse(third.get("duplicate"))
+        self.assertNotEqual(third["id"], first["id"])
+        self.assertTrue(third["name"].startswith("hash_a_"))
+
+    def test_upload_check_matches_by_hash_regardless_of_name(self):
+        item = self._upload(self._jpeg((9, 9, 9)), "hash_b.jpg")
+        data = self._jpeg((9, 9, 9)).getvalue()
+        h = chitra.quick_hash(io.BytesIO(data), len(data))
+        r = client.post("/api/upload/check", json={"files": [
+            {"name": "anything.jpg", "size": len(data), "hash": h},
+            {"name": "hash_b.jpg", "size": len(data)},                    # legacy name+size
+            {"name": "hash_b.jpg", "size": len(data), "hash": "0" * 64},  # same name, other bytes
+        ]}).get_json()
+        self.assertEqual(r["exists"], [True, True, False])
+        self.assertEqual(r["ids"][0], item["id"])
+
+    def test_scan_hashes_new_files(self):
+        path = os.path.join(MEDIA, "CameraX", "hashed.jpg")
+        self._jpeg((7, 7, 7)).seek(0)
+        with open(path, "wb") as f:
+            f.write(self._jpeg((7, 7, 7)).getvalue())
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        h = conn.execute("SELECT content_hash FROM media WHERE name='hashed.jpg'").fetchone()[0]
+        conn.close()
+        self.assertEqual(h, chitra.quick_hash_file(chitra.Path(path)))
+
+
+class RenditionTests(unittest.TestCase):
+    """?w= thumbnail sizes, the tiny placeholder tier, and the viewer preview."""
+
+    def _img(self, r):
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "image/jpeg")
+        return Image.open(io.BytesIO(r.data))
+
+    def test_sizes_snap_and_scale(self):
+        path = os.path.join(MEDIA, "CameraX", "big.jpg")
+        Image.new("RGB", (1600, 1200), (30, 60, 90)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("big.jpg")
+
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb")).size, (480, 360))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=160")).size, (160, 120))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=1024")).size, (1024, 768))
+        # Sizes snap up to the next tier; nonsense falls back to the default.
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=100")).size, (160, 120))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=abc")).size, (480, 360))
+        tiny = client.get(f"/api/media/{mid}/thumb?w=32&v=0")
+        self.assertEqual(self._img(tiny).size, (32, 24))
+        self.assertLess(len(tiny.data), 2000)
+        self.assertIn("immutable", tiny.headers["Cache-Control"])
+        # Only tier files exist in the cache, under predictable names.
+        names = sorted(p.name for p in chitra.THUMB_DIR.glob(f"{mid}*"))
+        self.assertEqual(names, sorted([f"{mid}.jpg", f"{mid}_160.jpg", f"{mid}_1024.jpg", f"{mid}_32.jpg"]))
+
+        # Preview: viewer-sized, and dropped with the thumbs when the file changes.
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview?v=0")).size, (1600, 1200))
+        self.assertTrue(chitra.preview_path_for(mid).exists())
+        self.assertEqual(client.post(f"/api/media/{mid}/rotate?degrees=90").status_code, 200)
+        self.assertFalse(chitra.preview_path_for(mid).exists())
+        self.assertEqual(list(chitra.THUMB_DIR.glob(f"{mid}*")), [])
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview?v=1")).size, (1200, 1600))
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/thumb?w=32&v=1")).size, (24, 32))
+
+    def test_preview_caps_at_2048(self):
+        path = os.path.join(MEDIA, "CameraX", "huge.jpg")
+        Image.new("RGB", (4096, 2048), (5, 5, 5)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("huge.jpg")
+        self.assertEqual(self._img(client.get(f"/api/media/{mid}/preview")).size, (2048, 1024))
+
+    def test_placeholder_source_has_no_tiny_tier_pinned(self):
+        mid = id_of("two.jpg")
+        p = chitra.thumb_path_for(mid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(chitra._placeholder_thumb())
+        self.addCleanup(lambda: chitra.invalidate_thumbs(mid))
+        r = client.get(f"/api/media/{mid}/thumb?w=32&v=0")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("immutable", r.headers["Cache-Control"])
+        self.assertFalse(chitra.thumb_path_for(mid, 32).exists())
+
+
+class InfoPanelTests(unittest.TestCase):
+    def test_detail_carries_exposure_settings_from_exif(self):
+        path = os.path.join(MEDIA, "CameraX", "exposed.jpg")
+        exif = Image.Exif()
+        exif[271] = "Nikon"
+        sub = exif.get_ifd(0x8769)
+        sub[33437] = 1.8          # FNumber
+        sub[33434] = 1 / 125      # ExposureTime
+        sub[34855] = 200          # ISO
+        sub[37386] = 26.0         # FocalLength
+        sub[41989] = 39           # FocalLengthIn35mmFilm
+        sub[42036] = "Nikkor 26mm"
+        sub[37380] = 0.3          # ExposureBiasValue
+        sub[37385] = 16           # Flash: did not fire
+        Image.new("RGB", (64, 64), (9, 9, 9)).save(path, "JPEG", exif=exif.tobytes())
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+
+        d = client.get(f"/api/media/{id_of('exposed.jpg')}").get_json()
+        self.assertEqual(d["exposure"], {
+            "iso": "ISO 200", "aperture": "f/1.8", "shutter": "1/125 s",
+            "focal_length": "26 mm (39 mm equiv.)", "lens": "Nikkor 26mm",
+            "exposure_bias": "+0.3 EV", "flash": "Did not fire",
+        })
+        # A photo without exposure tags gets an empty block, not an error.
+        self.assertEqual(client.get(f"/api/media/{id_of('one.jpg')}").get_json()["exposure"], {})
+
+
+class EditVersionTests(unittest.TestCase):
+    """Thumb URLs are ?v=<edit_version> and immutable, so every mutation must
+    bump the version and every list that feeds a grid must carry it."""
+
+    def test_rotate_bumps_edit_version_and_returns_it(self):
+        path = os.path.join(MEDIA, "CameraX", "rot.jpg")
+        Image.new("RGB", (80, 40), (5, 5, 5)).save(path, "JPEG")
+
+        def cleanup():
+            os.remove(path)
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+        chitra.scan_once()
+        mid = id_of("rot.jpg")
+
+        r = client.post(f"/api/media/{mid}/rotate?degrees=90")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["edit_version"], 1)
+        self.assertEqual((r.get_json()["width"], r.get_json()["height"]), (40, 80))
+        self.assertEqual(client.get(f"/api/media/{mid}").get_json()["edit_version"], 1)
+        r2 = client.post(f"/api/media/{mid}/rotate?degrees=90")
+        self.assertEqual(r2.get_json()["edit_version"], 2)
+
+    def test_collection_feeds_carry_edit_version(self):
+        mid = id_of("one.jpg")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.execute("CREATE TABLE IF NOT EXISTS faces (id INTEGER PRIMARY KEY,"
+                     " media_id TEXT, bbox TEXT, score REAL, embedding BLOB,"
+                     " cluster_id INTEGER)")
+        conn.execute("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (7, 'V', 1)")
+        conn.execute("INSERT INTO faces (media_id, bbox, score, cluster_id) VALUES (?,?,?,7)",
+                     (mid, "1,1,10,10", 0.9))
+        conn.execute("UPDATE media SET lat=12.9, lng=77.6 WHERE id=?", (mid,))
+        conn.commit()
+        conn.close()
+
+        def cleanup():
+            c = chitra.sqlite3.connect(chitra.DB_PATH)
+            c.execute("DELETE FROM faces WHERE cluster_id=7")
+            c.execute("UPDATE media SET lat=NULL, lng=NULL WHERE id=?", (mid,))
+            c.commit()
+            c.close()
+            _drop_clusters_table()
+        self.addCleanup(cleanup)
+
+        pid = client.post("/api/persons", json={"name": "Version Carrier"}).get_json()["id"]
+        self.assertEqual(client.post(f"/api/persons/{pid}/tag/{mid}").status_code, 200)
+
+        for url in (f"/api/persons/{pid}/media", "/api/clusters/7/media",
+                    "/api/media_near?lat=12.9&lng=77.6&radius_km=1"):
+            d = client.get(url).get_json()
+            items = d["items"] if isinstance(d, dict) else d
+            self.assertTrue(items, url)
+            self.assertTrue(all("edit_version" in i for i in items), url)
+
+
+class QueryPlanTests(unittest.TestCase):
+    """The latency work only holds if SQLite actually uses the indexes."""
+
+    def _plan(self, sql, args=()):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        rows = conn.execute("EXPLAIN QUERY PLAN " + sql, args).fetchall()
+        conn.close()
+        return " | ".join(r[3] for r in rows)
+
+    def test_duplicate_lookup_uses_name_size_index(self):
+        plan = self._plan("SELECT id FROM media WHERE name = ? AND size = ? AND trashed_at IS NULL LIMIT 1",
+                          ("x.jpg", 1))
+        self.assertIn("idx_media_name_size", plan)
+
+    def test_recently_uploaded_sort_has_no_temp_btree(self):
+        plan = self._plan(
+            "SELECT id FROM media m WHERE m.trashed_at IS NULL AND m.archived = 0 AND m.album = ? "
+            "ORDER BY m.added_at DESC LIMIT 80 OFFSET 0", ("uploads",))
+        self.assertNotIn("TEMP B-TREE", plan)
+
+    def test_search_inside_uploads_album_can_match(self):
+        # q used to add `album != 'uploads'` even when album=uploads was asked
+        # for, so the Uploads view searched for anything returned nothing.
+        total, names = totals(album="uploads", q="up")
+        self.assertEqual(names, ["up.jpg"])
+        total_all, names_all = totals(q="up")
+        self.assertNotIn("up.jpg", names_all)   # plain search still skips uploads
 
 
 class FeedFilterTests(unittest.TestCase):
@@ -161,6 +957,33 @@ class ReadOnlyTests(unittest.TestCase):
         self.assertEqual(client.post(f"/api/media/{mid}/rotate").status_code, 403)
         self.assertEqual(client.post(f"/api/media/{mid}/edit").status_code, 403)
 
+    def test_people_labelling_allowed_in_safe_mode(self):
+        """Regression: safe mode 403'd cluster naming and person tagging, so
+        renaming a face group silently did nothing on a read-only library.
+        Labels are metadata about the library, not edits to any media file."""
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("CREATE TABLE IF NOT EXISTS clusters "
+                     "(id INTEGER PRIMARY KEY, name TEXT, count INTEGER, rep_face_id INTEGER)")
+        conn.execute("INSERT OR REPLACE INTO clusters (id, name, count) VALUES (9, NULL, 1)")
+        conn.commit()
+        conn.close()
+        self.addCleanup(_drop_clusters_table)
+
+        r = client.post("/api/clusters/9/name", json={"name": "Sister A"})
+        self.assertEqual(r.status_code, 200)
+
+        r = client.post("/api/persons", json={"name": "Sister B"})
+        self.assertEqual(r.status_code, 200)
+        pid = r.get_json()["id"]
+        self.assertEqual(
+            client.post(f"/api/persons/{pid}/tag/{id_of('one.jpg')}").status_code, 200)
+
+        # The name must actually persist, not just return 200.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        got = conn.execute("SELECT name FROM clusters WHERE id=9").fetchone()[0]
+        conn.close()
+        self.assertEqual(got, "Sister A")
+
     def test_auto_purge_never_destroys_in_safe_mode(self):
         # Even ancient trashed items must survive: purge is a no-op.
         p = os.path.join(MEDIA, "CameraX", "old_trashed.jpg")
@@ -180,6 +1003,13 @@ class ReadOnlyTests(unittest.TestCase):
         mid = id_of("one.jpg")
         self.assertEqual(client.post(f"/api/media/{mid}/favorite").status_code, 200)
         client.post(f"/api/media/{mid}/favorite")
+
+    def test_upload_check_allowed_in_safe_mode(self):
+        # The phone pre-flights every backup batch through this POST; it reads
+        # the index and writes nothing, so safe mode must let it through.
+        r = client.post("/api/upload/check", json={"files": [{"name": "x.jpg", "size": 1}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["exists"], [False])
 
     def test_upload_allowed_and_lands_in_uploads_album(self):
         buf = io.BytesIO()
@@ -287,6 +1117,270 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.mimetype, "image/jpeg")
 
+    def test_detail_survives_clip_embedding_blob(self):
+        """Regression: media_meta does SELECT *, so once clip_indexer.py adds
+        the clip_embedding BLOB every detail request 500'd on jsonify with
+        'Object of type bytes is not JSON serializable' — the metadata panel
+        (date, camera, size) went blank for every CLIP-indexed photo."""
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        chitra._add_column_if_missing(conn, "media", "clip_embedding BLOB")
+        conn.execute("UPDATE media SET clip_embedding=? WHERE name='one.jpg'",
+                     (b"\x00\x01\x02\x03" * 128,))
+        conn.commit()
+        conn.close()
+        # The fixture DB is shared module-wide, and MemoriesTests asserts the
+        # no-clip_embedding path — put the schema back however this test ends.
+        self.addCleanup(_drop_clip_embedding)
+
+        r = client.get(f"/api/media/{id_of('one.jpg')}")
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        self.assertNotIn("clip_embedding", d)
+        self.assertEqual(d["name"], "one.jpg")
+        self.assertIsNotNone(d["taken_at"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---------------------------------------------------------------------------
+# Uploads: multi-file, de-duplication, pre-flight check, recently uploaded
+# ---------------------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+
+def _jpeg(color, size=(40, 40)):
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "JPEG")
+    buf.seek(0)
+    return buf
+
+
+def _upload(parts):
+    r = client.post("/api/upload", data=parts, content_type="multipart/form-data")
+    assert r.status_code == 200, (r.status_code, r.data[:200])
+    return r.get_json()
+
+
+def _row(name, col):
+    conn = chitra.sqlite3.connect(chitra.DB_PATH)
+    v = conn.execute(f"SELECT {col} FROM media WHERE name=?", (name,)).fetchone()
+    conn.close()
+    return v[0] if v else None
+
+
+class UploadTests(unittest.TestCase):
+    def test_multi_file_upload_saves_every_part(self):
+        # The phone sends file_0, file_1, ...; the web client repeats 'file'.
+        d = _upload({
+            "file_0": (_jpeg((1, 2, 3)), "multi_a.jpg"),
+            "file_1": (_jpeg((4, 5, 6)), "multi_b.jpg"),
+            "file": [(_jpeg((7, 8, 9)), "multi_c.jpg"), (_jpeg((9, 9, 9), (48, 48)), "multi_d.jpg")],
+        })
+        self.assertEqual(d["count"], 4)
+        self.assertEqual(sorted(i["name"] for i in d["items"]),
+                         ["multi_a.jpg", "multi_b.jpg", "multi_c.jpg", "multi_d.jpg"])
+        self.assertTrue(all(i["indexed"] and not i.get("duplicate") for i in d["items"]))
+        _, names = totals(album="uploads")
+        for n in ("multi_a.jpg", "multi_b.jpg", "multi_c.jpg", "multi_d.jpg"):
+            self.assertIn(n, names)
+
+    def test_duplicate_upload_is_skipped_not_copied(self):
+        raw = _jpeg((50, 60, 70)).getvalue()
+        first = _upload({"file": (io.BytesIO(raw), "dup.jpg")})["items"][0]
+        second = _upload({"file": (io.BytesIO(raw), "dup.jpg")})["items"][0]
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(second["id"], first["id"])
+        on_disk = [p.name for p in Path(MEDIA, "uploads").rglob("dup*")]
+        self.assertEqual(on_disk, ["dup.jpg"])
+        # Same name, different bytes (different size) is NOT a duplicate:
+        # it lands beside the original under a suffixed name.
+        third = _upload({"file": (_jpeg((50, 60, 70), (100, 100)), "dup.jpg")})["items"][0]
+        self.assertFalse(third.get("duplicate"))
+        self.assertEqual(third["name"], "dup_1.jpg")
+
+    def test_upload_check_reports_existing_pairs(self):
+        _upload({"file": (_jpeg((11, 22, 33)), "chk.jpg")})
+        size = _row("chk.jpg", "size")
+        r = client.post("/api/upload/check", json={"files": [
+            {"name": "chk.jpg", "size": size},
+            {"name": "chk.jpg", "size": size + 1},
+            {"name": "/sdcard/DCIM/chk.jpg", "size": size},   # path stripped
+            {"name": "nope.jpg", "size": 10},
+            {"name": "bad", "size": "x"},
+        ]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["exists"], [True, False, True, False, False])
+        self.assertEqual(client.post("/api/upload/check", json={"files": "x"}).status_code, 400)
+
+    def test_recently_uploaded_orders_by_added_at(self):
+        _upload({"file": (_jpeg((1, 1, 1)), "older_up.jpg")})
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET added_at = added_at - 1000 WHERE name='older_up.jpg'")
+        conn.commit()
+        conn.close()
+        _upload({"file": (_jpeg((2, 2, 2)), "newer_up.jpg")})
+        r = client.get("/api/media", query_string={"album": "uploads", "sort": "added", "per_page": 200})
+        items = r.get_json()["items"]
+        names = [i["name"] for i in items]
+        self.assertLess(names.index("newer_up.jpg"), names.index("older_up.jpg"))
+        self.assertIsNotNone(items[0]["added_at"])
+        self.assertIn("edit_version", items[0])
+
+    def test_rescan_keeps_added_at(self):
+        _upload({"file": (_jpeg((3, 3, 3)), "keep_added.jpg")})
+        before = _row("keep_added.jpg", "added_at")
+        path = _row("keep_added.jpg", "path")
+        os.utime(path, (time.time() + 5, time.time() + 5))   # file "changed"
+        chitra.scan_once()
+        self.assertEqual(_row("keep_added.jpg", "added_at"), before)
+        self.assertNotEqual(_row("keep_added.jpg", "mtime"), None)
+
+
+# ---------------------------------------------------------------------------
+# Feed ordering and the indexes behind it (shift-left perf checks)
+# ---------------------------------------------------------------------------
+
+def _add_album(album, names):
+    """Create a throwaway album dir + files and index them."""
+    d = os.path.join(MEDIA, album)
+    os.makedirs(d, exist_ok=True)
+    for name in names:
+        make_jpeg(os.path.join(d, name), (len(name), 9, 9))
+    chitra.scan_once()
+
+
+def _remove_album(album):
+    """Delete the dir and let the scanner prune its rows (shared fixture DB)."""
+    shutil.rmtree(os.path.join(MEDIA, album), ignore_errors=True)
+    chitra.scan_once()
+
+
+class SortIndexTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _add_album("SortAlbum", ["s1.jpg", "s2.jpg", "s3.jpg"])
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET taken_at=100 WHERE name='s1.jpg'")
+        conn.execute("UPDATE media SET taken_at=300 WHERE name='s2.jpg'")
+        conn.execute("UPDATE media SET taken_at=200 WHERE name='s3.jpg'")
+        conn.commit()
+        conn.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        _remove_album("SortAlbum")
+
+    def test_dated_feed_is_newest_first(self):
+        _, names = totals(dated=1)
+        sub = [n for n in names if n in ("s1.jpg", "s2.jpg", "s3.jpg")]
+        self.assertEqual(sub, ["s2.jpg", "s3.jpg", "s1.jpg"])
+
+    def test_dated_feed_needs_no_sort_step(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT m.id FROM media m WHERE m.trashed_at IS NULL "
+            "AND m.archived = 0 AND m.taken_at IS NOT NULL AND m.album != 'uploads' "
+            "ORDER BY m.taken_at DESC LIMIT 80").fetchall()
+        conn.close()
+        detail = " | ".join(r[3] for r in plan)
+        self.assertNotIn("TEMP B-TREE", detail, detail)
+        # Either browse index has taken_at right after (trashed_at, archived).
+        self.assertRegex(detail, r"idx_media_(dated|undated)")
+
+    def test_indexes_exist_after_init(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        names = {r[1] for r in conn.execute("PRAGMA index_list(media)")}
+        conn.close()
+        for idx in ("idx_media_dated", "idx_media_mtime", "idx_media_added"):
+            self.assertIn(idx, names)
+
+    def test_undated_feed_orders_by_file_date(self):
+        os.makedirs(os.path.join(MEDIA, "UndatedAlbum"), exist_ok=True)
+        self.addCleanup(_remove_album, "UndatedAlbum")
+        for name in ("u_old.jpg", "u_new.jpg"):
+            make_jpeg(os.path.join(MEDIA, "UndatedAlbum", name), (5, 5, 5))
+        now = time.time()
+        os.utime(os.path.join(MEDIA, "UndatedAlbum", "u_old.jpg"), (now - 5000, now - 5000))
+        os.utime(os.path.join(MEDIA, "UndatedAlbum", "u_new.jpg"), (now - 10, now - 10))
+        chitra.scan_once()
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE media SET taken_at=NULL WHERE name IN ('u_old.jpg','u_new.jpg')")
+        conn.commit()
+        conn.close()
+        _, names = totals(undated=1, kind="photo")
+        sub = [n for n in names if n in ("u_old.jpg", "u_new.jpg")]
+        self.assertEqual(sub, ["u_new.jpg", "u_old.jpg"])
+
+
+# ---------------------------------------------------------------------------
+# HTTP caching and timing headers
+# ---------------------------------------------------------------------------
+
+class CacheHeaderTests(unittest.TestCase):
+    def test_thumb_cache_headers(self):
+        mid = id_of("one.jpg")
+        r = client.get(f"/api/media/{mid}/thumb")
+        self.assertEqual(r.status_code, 200)
+        cc = r.headers["Cache-Control"]
+        self.assertIn("max-age=600", cc)
+        self.assertNotIn("immutable", cc)
+        self.assertIn("ETag", r.headers)
+        # Versioned URL: cache for a year, immutable.
+        r2 = client.get(f"/api/media/{mid}/thumb?v=3")
+        cc2 = r2.headers["Cache-Control"]
+        self.assertIn("max-age=31536000", cc2)
+        self.assertIn("immutable", cc2)
+        # Conditional revalidation still works for clients that do it.
+        r3 = client.get(f"/api/media/{mid}/thumb", headers={"If-None-Match": r.headers["ETag"]})
+        self.assertEqual(r3.status_code, 304)
+
+    def test_placeholder_thumb_is_never_immutable(self):
+        # ensure_thumb negative-caches a failed thumb as the placeholder file.
+        # The web client always asks with ?v=, so serving that file through
+        # the normal path would pin a grey tile in the browser for a year.
+        mid = id_of("two.jpg")
+        p = chitra.thumb_path_for(mid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(chitra._placeholder_thumb())
+        self.addCleanup(lambda: p.unlink(missing_ok=True))
+        r = client.get(f"/api/media/{mid}/thumb?v=0")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("max-age=600", r.headers["Cache-Control"])
+        self.assertNotIn("immutable", r.headers["Cache-Control"])
+        # ...and the negative cache is kept: no regeneration behind our back.
+        self.assertEqual(p.read_bytes(), chitra._placeholder_thumb())
+
+    def test_server_timing_header_on_every_response(self):
+        r = client.get("/api/health")
+        self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")
+        r = client.get("/api/media", query_string={"per_page": 5})
+        self.assertRegex(r.headers.get("Server-Timing", ""), r"app;dur=\d")
+
+
+class AlbumCoverTests(unittest.TestCase):
+    def test_album_count_and_cover_is_newest_non_trashed(self):
+        _add_album("CoverAlbum", ["alb_a.jpg", "alb_b.jpg", "alb_c.jpg"])
+        self.addCleanup(_remove_album, "CoverAlbum")
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        for name, ts in (("alb_a.jpg", 1000), ("alb_b.jpg", 3000), ("alb_c.jpg", 2000)):
+            conn.execute("UPDATE media SET taken_at=? WHERE name=?", (ts, name))
+        # Newest one trashed: cover must fall back to the next newest.
+        conn.execute("UPDATE media SET trashed_at=1 WHERE name='alb_b.jpg'")
+        conn.commit()
+        conn.close()
+        albums = {a["album"]: a for a in client.get("/api/albums").get_json()}
+        self.assertEqual(albums["CoverAlbum"]["count"], 2)
+        self.assertEqual(albums["CoverAlbum"]["cover"], id_of("alb_c.jpg"))
+
+    def test_undated_feed_needs_no_sort_step(self):
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT m.id FROM media m WHERE m.trashed_at IS NULL "
+            "AND m.archived = 0 AND m.kind = 'photo' AND m.taken_at IS NULL "
+            "AND m.album != 'uploads' ORDER BY m.mtime DESC LIMIT 80").fetchall()
+        conn.close()
+        detail = " | ".join(r[3] for r in plan)
+        self.assertNotIn("TEMP B-TREE", detail, detail)

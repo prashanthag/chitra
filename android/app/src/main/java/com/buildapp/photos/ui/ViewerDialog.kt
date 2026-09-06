@@ -15,6 +15,9 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddToPhotos
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -65,6 +68,10 @@ fun ViewerDialog(
     onRestore: (MediaItem) -> Unit = {},
     onRotate: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
+    onAddToAlbum: ((MediaItem) -> Unit)? = null,
+    /** Lock (or, in the Locked folder, unlock) the item; null hides the button. */
+    onLock: ((MediaItem) -> Unit)? = null,
+    lockedView: Boolean = false,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -83,11 +90,11 @@ fun ViewerDialog(
                     // Only the settled page gets a live player, so swiping
                     // never spins up multiple decoders.
                     if (pagerState.settledPage == page) {
-                        VideoPlayer(url = Urls.stream(serverUrl, m.id))
+                        VideoPlayer(url = Urls.play(serverUrl, m.id))
                     } else {
                         Box(Modifier.fillMaxSize().background(Color.Black)) {
                             AsyncImage(
-                                model = Urls.thumb(serverUrl, m.id),
+                                model = Urls.thumb(serverUrl, m.id, m.editVersion, w = 1024),
                                 contentDescription = m.name,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize(),
@@ -95,9 +102,11 @@ fun ViewerDialog(
                         }
                     }
                 } else {
-                    // Server-side JPEG conversion flattens HEIC/TIFF/MPO.
+                    // The cached 2048px preview: EXIF-rotated, HEIC/TIFF
+                    // flattened, immutable-cached. The original (full?as=jpeg)
+                    // was re-encoded by the server on every swipe.
                     AsyncImage(
-                        model = Urls.full(serverUrl, m.id, asJpeg = true),
+                        model = Urls.preview(serverUrl, m.id, m.editVersion),
                         contentDescription = m.name,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
@@ -111,6 +120,17 @@ fun ViewerDialog(
                 val scope = rememberCoroutineScope()
                 IconButton(onClick = { showInfo = !showInfo }) {
                     Icon(Icons.Default.Info, contentDescription = "Info", tint = Color.White)
+                }
+                if (onAddToAlbum != null && item.trashedAt == null) {
+                    IconButton(onClick = { onAddToAlbum(item) }) {
+                        Icon(Icons.Default.AddToPhotos, contentDescription = "Add to album", tint = Color.White)
+                    }
+                }
+                if (onLock != null && item.trashedAt == null) {
+                    IconButton(onClick = { onLock(item); onDismiss() }) {
+                        Icon(if (lockedView) Icons.Default.LockOpen else Icons.Default.Lock,
+                            contentDescription = if (lockedView) "Unlock" else "Move to Locked folder", tint = Color.White)
+                    }
                 }
                 IconButton(onClick = {
                     // Download the actual file and hand it to the share sheet.
@@ -206,10 +226,25 @@ fun ViewerDialog(
                         } ?: add("Taken" to "Date unknown")
                         val cam = listOfNotNull(detail.cameraMake, detail.cameraModel).joinToString(" ")
                         if (cam.isNotBlank()) add("Camera" to cam)
+                        val ex = detail.exposure.orEmpty()
+                        ex["lens"]?.let { add("Lens" to it) }
+                        ex["aperture"]?.let { add("Aperture" to it) }
+                        ex["shutter"]?.let { add("Shutter" to it) }
+                        ex["iso"]?.let { add("ISO" to it) }
+                        ex["focal_length"]?.let { add("Focal length" to it) }
+                        ex["exposure_bias"]?.let { add("Exposure bias" to it) }
+                        ex["flash"]?.let { add("Flash" to it) }
+                        val vi = detail.video.orEmpty()
+                        vi["duration"]?.let { add("Duration" to it) }
+                        vi["codec"]?.let { add("Codec" to it) }
+                        vi["frame_rate"]?.let { add("Frame rate" to it) }
+                        vi["bitrate"]?.let { add("Bitrate" to it) }
                         if (detail.width != null && detail.height != null) add("Resolution" to "${detail.width} × ${detail.height}")
                         detail.size?.let { add("Size" to if (it >= 1_000_000) "%.1f MB".format(it / 1e6) else "${it / 1000} KB") }
                         add("Type" to "${detail.kind} · ${detail.ext.removePrefix(".").uppercase()}")
                         detail.album?.let { add("Folder" to it) }
+                        detail.sourceFolder?.let { add("Phone folder" to it) }
+                        detail.sourceDevice?.let { add("Backed up from" to it) }
                         detail.place?.let { add("Place" to it) }
                         if (detail.lat != null && detail.lng != null)
                             add("Location" to "%.5f, %.5f".format(detail.lat, detail.lng))
@@ -231,7 +266,13 @@ fun ViewerDialog(
 private fun VideoPlayer(url: String) {
     val context = LocalContext.current
     val exoPlayer = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
+        // The session header must ride along on video requests too.
+        val http = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(com.buildapp.photos.api.Auth.headers())
+            .setAllowCrossProtocolRedirects(true)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(http))
+            .build().apply {
             setMediaItem(ExoMediaItem.fromUri(url))
             prepare()
             playWhenReady = true

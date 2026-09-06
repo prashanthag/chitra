@@ -58,7 +58,7 @@
           position:sticky; top:0; z-index:5;
           background:linear-gradient(var(--bg) 72%, transparent); }
   .mhead:first-child { padding-top:8px; }
-  .tile { position:relative; aspect-ratio:1; background:var(--panel2); cursor:pointer;
+  .tile { position:relative; aspect-ratio:1; background:var(--panel2) center/cover no-repeat; cursor:pointer;
           overflow:hidden; border-radius:4px; }
   .tile img { width:100%; height:100%; object-fit:cover; display:block; transition:transform .2s; }
   .tile:hover img { transform:scale(1.04); }
@@ -89,6 +89,8 @@
   .card .sq { width:100%; aspect-ratio:1; border-radius:10px; object-fit:cover; background:var(--panel2); }
   .card .nm { margin-top:8px; font-size:13px; text-align:center; }
   .card .ct { font-size:11px; color:var(--dim); text-align:center; }
+  .card .ct .rn { color:var(--dim); text-decoration:underline; text-underline-offset:2px; }
+  .card .ct .rn:hover { color:var(--fg, #e8e8ea); }
 
   #status { padding:18px; color:var(--dim); font-size:13px; }
   #sentinel { height:1px; }
@@ -125,6 +127,34 @@
   #infopop .ik { color:var(--dim); min-width:86px; }
   #infopop .iv { word-break:break-all; }
   #tagpop h4 { margin:0 0 10px; font-size:13px; }
+  #albumpop { position:fixed; top:64px; right:18px; width:290px; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; padding:14px; display:none; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+  #albumpop.on { display:block; }
+  #albumpop h4 { margin:0 0 10px; font-size:13px; display:flex; align-items:center; }
+  #albumpop h4 .x { margin-left:auto; cursor:pointer; color:var(--dim); }
+  #albumpop .plist { max-height:240px; overflow:auto; margin-bottom:10px; }
+  #albumpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
+  #albumpop .prow:hover { background:var(--panel2); }
+  #albumpop .prow .chk { margin-left:auto; color:var(--accent); }
+  #albumpop .prow .n { color:var(--dim); font-size:11px; }
+  #albumpop .newrow { display:flex; gap:6px; }
+  #albumpop .newrow input { flex:1; min-width:0; }
+  #cards .sect { grid-column:1/-1; font-size:13px; color:var(--dim); margin:4px 0 -6px; }
+  #loginpop { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; align-items:center; justify-content:center; z-index:300; }
+  #loginpop.on { display:flex; }
+  #loginpop .box { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; width:300px; display:flex; flex-direction:column; gap:10px; }
+  #loginpop h3 { margin:0; font-size:16px; } #loginpop .hint { margin:0; color:var(--dim); font-size:12px; }
+  #loginpop .row { display:flex; align-items:center; gap:10px; } #loginpop .err { color:#ff8a8a; font-size:12px; }
+  #accountpop { position:fixed; left:18px; bottom:18px; width:320px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; display:none; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,.5); font-size:13px; }
+  #accountpop.on { display:block; }
+  #accountpop h4 { margin:0 0 10px; font-size:13px; display:flex; align-items:center; } #accountpop h4 .x { margin-left:auto; cursor:pointer; color:var(--dim); }
+  #accountpop .urow { display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--line); }
+  #accountpop .urow .role { color:var(--dim); font-size:11px; } #accountpop .urow .del { margin-left:auto; color:var(--dim); cursor:pointer; }
+  #accountpop .newrow { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; } #accountpop .newrow input { flex:1; min-width:90px; }
+  #accountpop .muted { color:var(--dim); }
+  .card .sq.new { display:flex; align-items:center; justify-content:center; font-size:34px; color:#67676f; border:1px dashed var(--line); box-sizing:border-box; }
+  .crumb .btn { padding:4px 10px; font-size:12px; }
+  .crumb .acts { margin-left:auto; display:flex; gap:6px; }
   #tagpop .plist { max-height:220px; overflow:auto; margin-bottom:10px; }
   #tagpop .prow { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; font-size:13px; }
   #tagpop .prow:hover { background:var(--panel2); }
@@ -170,12 +200,16 @@
     <div class="item" data-view="albums"><span class="ic">▤</span> Albums</div>
     <div class="item" data-view="cameras"><span class="ic">▣</span> Cameras</div>
     <div class="item" data-view="videos"><span class="ic">▷</span> Videos</div>
+    <div class="item" data-view="uploads"><span class="ic">⇪</span> Recently uploaded</div>
     <div class="sep"></div>
     <div class="label">Unknown date</div>
     <div class="item" data-view="unknown-photos"><span class="ic">▦</span> Photos</div>
     <div class="item" data-view="unknown-videos"><span class="ic">▷</span> Videos</div>
     <div class="sep"></div>
+    <div class="item" data-view="locked"><span class="ic">🔒</span> Locked</div>
     <div class="item" data-view="trash"><span class="ic">🗑</span> Trash</div>
+    <div class="sep"></div>
+    <div class="item" id="navAccount" onclick="openAccount()"><span class="ic">👤</span> <span id="accountLabel">Account</span></div>
   </nav>
 
   <main id="main">
@@ -183,6 +217,10 @@
       <button class="btn" title="Clear selection" onclick="clearSel()">✕</button>
       <span class="cnt" id="selCount">0 selected</span>
       <button class="btn" onclick="selectAll()">Select all</button>
+      <button class="btn" id="selAlbum" onclick="openAlbumPicker([...state.sel])">＋ Album</button>
+      <button class="btn" id="selRemove" onclick="removeSelFromAlbum()">− Remove from album</button>
+      <button class="btn" id="selLock" onclick="lockSel(true)">🔒 Lock</button>
+      <button class="btn" id="selUnlock" onclick="lockSel(false)">🔓 Unlock</button>
       <span style="margin-left:auto"></span>
       <button class="btn danger" id="selTrash" onclick="bulkTrash()">🗑 Move to trash</button>
       <button class="btn" id="selRestore" onclick="bulkRestore()">↩ Restore</button>
@@ -201,8 +239,11 @@
   <div class="top">
     <button class="iconbtn" onclick="closeViewer()">✕</button>
     <span class="grow"></span>
+    <button class="iconbtn" id="vFull" title="Open full size" onclick="openFull()">⤢</button>
     <button class="iconbtn" id="vId" title="ID / passport photo (white background)" onclick="idPhotoCurrent()">🪪</button>
     <button class="iconbtn" id="vShare" title="Share" onclick="shareCurrent()">⤴</button>
+    <button class="iconbtn" id="vAlbum" title="Add to album" onclick="openAlbumPicker([curItem().id])">⊞</button>
+    <button class="iconbtn" id="vLock" title="Move to Locked folder" onclick="lockCurrent()">🔒</button>
     <button class="iconbtn" id="vInfo" title="Info" onclick="toggleInfo()">ⓘ</button>
     <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
     <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
@@ -227,10 +268,123 @@
 <div id="datebadge"></div>
 <div class="toast" id="toast"></div>
 <div id="dropzone">Drop photos &amp; videos to upload</div>
+<div id="loginpop">
+  <div class="box">
+    <h3 id="loginTitle">Sign in</h3>
+    <p class="hint" id="loginHint">This library needs an account.</p>
+    <input id="loginName" placeholder="Name" autocomplete="username" onkeydown="if(event.key==='Enter')$('#loginPw').focus()" />
+    <input id="loginPw" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="row"><button class="btn accent" onclick="doLogin()">Sign in</button><span class="err" id="loginErr"></span></div>
+  </div>
+</div>
+<div id="accountpop">
+  <h4>Account <span class="x" onclick="$('#accountpop').classList.remove('on')">✕</span></h4>
+  <div id="accountBody"></div>
+</div>
+<div id="albumpop">
+  <h4>Add to album <span class="x" onclick="closeAlbumPicker()">✕</span></h4>
+  <div class="plist" id="albumList"></div>
+  <div class="newrow">
+    <input id="newAlbum" placeholder="New album name" onkeydown="if(event.key==='Enter')createAlbumFromPicker()" />
+    <button class="btn accent" onclick="createAlbumFromPicker()">Create</button>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
-const api = (p, o) => fetch(p, o);
+// Accounts: once the first user exists every /api call needs a session
+// (a cookie the server sets on login). A 401 anywhere opens the sign-in box.
+const api = async (p, o) => {
+  const r = await fetch(p, o);
+  if(r.status===401 && !p.startsWith('/api/login')){
+    if(p.includes('locked=1') || p.startsWith('/api/media/unlock')) { await unlockPrompt(); }
+    else showLogin();
+  }
+  return r;
+};
+let AUTH = {auth_required:false, user:null, unlocked:false};
+async function refreshAuth(){
+  try{ AUTH = await (await fetch('/api/auth/state')).json(); }catch(e){}
+  $('#accountLabel').textContent = AUTH.user? AUTH.user.name : (AUTH.auth_required? 'Sign in' : 'Account');
+  document.querySelector('[data-view="locked"]').style.display = AUTH.user? '' : 'none';
+}
+function showLogin(){
+  const pop = $('#loginpop'); if(pop.classList.contains('on')) return;
+  $('#loginErr').textContent=''; pop.classList.add('on'); $('#loginName').focus();
+}
+async function doLogin(){
+  const name=$('#loginName').value.trim(), password=$('#loginPw').value;
+  const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, password, device:'web'})});
+  if(!r.ok){ $('#loginErr').textContent='Wrong name or password'; return; }
+  $('#loginpop').classList.remove('on'); $('#loginPw').value='';
+  await refreshAuth(); reloadView();
+}
+async function logout(){ await fetch('/api/logout', {method:'POST'}); location.reload(); }
+// The Locked folder asks for the account password again (like device auth).
+async function unlockPrompt(){
+  const password = prompt('Locked folder — enter your password:'); if(password===null) return false;
+  const r = await fetch('/api/locked/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password})});
+  if(!r.ok){ toast('Wrong password'); return false; }
+  AUTH.unlocked = true; return true;
+}
+async function lockSel(lock){
+  const ids=[...state.sel]; if(!ids.length) return;
+  if(!AUTH.user){ showLogin(); return; }
+  const r = await getJSON(lock? '/api/media/lock' : '/api/media/unlock', idsPost(ids));
+  toast(lock? `Locked ${r.locked} (only you can see them, under Locked)` : `Unlocked ${r.unlocked}`);
+  state.sel.clear(); updateSelBar(); reloadView();
+}
+async function lockCurrent(){
+  const m = curItem(); if(!m) return;
+  if(!AUTH.user){ showLogin(); return; }
+  const lock = state.view!=='locked';
+  const r = await getJSON(lock? '/api/media/lock' : '/api/media/unlock', idsPost([m.id]));
+  toast(lock? 'Moved to your Locked folder' : 'Unlocked');
+  closeViewer(); reloadView();
+}
+async function lockAlbum(id, lock){
+  if(!AUTH.user){ showLogin(); return; }
+  if(lock && !confirm('Lock this album? It and its photos disappear from every view and every other account until you unlock it.')) return;
+  const r = await api(`/api/user_albums/${id}/${lock? 'lock':'unlock'}`, {method:'POST'});
+  if(r.ok){ toast(lock? 'Album locked' : 'Album unlocked'); lock? switchView('albums') : loadUserAlbum(id); }
+}
+async function openAccount(){
+  await refreshAuth();
+  const pop = $('#accountpop'); const body = $('#accountBody');
+  if(!AUTH.auth_required){
+    body.innerHTML = `<div class="muted">No accounts yet: everyone on the network is an admin. Create the first account to require sign-in (it becomes the admin).</div>
+      <div class="newrow"><input id="nuName" placeholder="Name"/><input id="nuPw" type="password" placeholder="Password"/><button class="btn accent" onclick="createUser(true)">Create admin</button></div>`;
+  }else if(!AUTH.user){
+    body.innerHTML = `<button class="btn accent" onclick="showLogin()">Sign in</button>`;
+  }else{
+    let users=[]; if(AUTH.user.role==='admin'){ try{ users = await getJSON('/api/users'); }catch(e){} }
+    body.innerHTML = `<div>Signed in as <b>${esc(AUTH.user.name)}</b> <span class="muted">(${AUTH.user.role})</span> · <a href="#" onclick="logout();return false">sign out</a> · <a href="#" onclick="changePassword();return false">change password</a></div>`
+      + (AUTH.user.role==='admin'? `<div style="margin-top:10px;font-weight:600">Users</div>` + users.map(u=>
+          `<div class="urow">${esc(u.name)} <span class="role">${u.role}</span>${u.id!==AUTH.user.id? `<span class="del" title="Delete" onclick="deleteUser(${u.id},'${esc(u.name)}')">✕</span>`:''}</div>`).join('')
+        + `<div class="newrow"><input id="nuName" placeholder="Name"/><input id="nuPw" type="password" placeholder="Password"/>
+           <select id="nuRole"><option value="member">member</option><option value="admin">admin</option></select>
+           <button class="btn accent" onclick="createUser(false)">Add</button></div>` : '');
+  }
+  pop.classList.add('on');
+}
+async function createUser(first){
+  const name=$('#nuName').value.trim(), password=$('#nuPw').value, role = first? 'admin' : $('#nuRole').value;
+  if(!name || password.length<4){ toast('Name and a password of 4+ characters'); return; }
+  const r = await fetch('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, password, role})});
+  if(!r.ok){ toast('Could not create user'); return; }
+  if(first){ toast('Admin created — sign in'); $('#accountpop').classList.remove('on'); await refreshAuth(); showLogin(); }
+  else { toast('User added'); openAccount(); }
+}
+async function deleteUser(id, name){
+  if(!confirm(`Delete account “${name}”? Anything they locked becomes visible again.`)) return;
+  await fetch(`/api/users/${id}`, {method:'DELETE'}); openAccount();
+}
+async function changePassword(){
+  const old = prompt('Current password:'); if(old===null) return;
+  const nw = prompt('New password (4+ characters):'); if(nw===null) return;
+  const r = await fetch('/api/users/me/password', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old, new: nw})});
+  toast(r.ok? 'Password changed' : 'Wrong current password');
+}
 const getJSON = async (p, o) => { const r = await api(p, o); if(!r.ok) throw {status:r.status}; return r.json(); };
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -256,13 +410,19 @@ function switchView(view, params, fromPop){
   state.view = view; state.page=1; state.done=false; state.items=[]; state.params = params||{};
   state.lastMonth = '';
   state.sel.clear(); updateSelBar();
-  setActive(view);
+  setActive(view==='ualbum'? 'albums' : view);
+  closeAlbumPicker();
   $('#searchbar').classList.toggle('on', view==='search');
   $('#grid').innerHTML=''; $('#cards').innerHTML=''; $('#cards').style.display='none'; $('#grid').style.display='grid';
   $('#crumb').style.display='none';
   $('#status').textContent='';
+  if(view==='locked' && !AUTH.unlocked){
+    unlockPrompt().then(ok=>{ if(ok) loadGrid(true); else switchView('photos'); });
+    return;
+  }
   if(view==='people'){ loadPeople(); return; }
   if(view==='albums'){ loadAlbums(); return; }
+  if(view==='ualbum'){ loadUserAlbum(state.params.id); return; }
   if(view==='cameras'){ loadCameras(); return; }
   if(view==='search'){ $('#status').textContent='Type to search.'; $('#searchInput').focus(); return; }
   loadGrid(true);
@@ -279,6 +439,10 @@ function viewParams(p){
   if(v==='videos') p.set('dated','1');
   if(v==='unknown-photos'){ p.set('undated','1'); p.set('kind','photo'); }
   if(v==='unknown-videos'){ p.set('undated','1'); p.set('kind','video'); }
+  // Recently uploaded: the phone/web upload album, newest upload first
+  // (by when it arrived, not when it was shot).
+  if(v==='uploads'){ p.set('album','uploads'); p.set('sort','added'); }
+  if(v==='locked'){ p.set('locked','1'); }
   Object.entries(state.params).forEach(([k,val])=> p.set(k,val));
   return p;
 }
@@ -305,9 +469,27 @@ function tileHTML(m, idx){
   const fav = m.favorite? '<span class="fav">★</span>':'';
   const badge = m.kind==='video'? '<span class="badge">▷</span>':'';
   const on = state.sel.has(m.id)? ' selected':'';
-  const ts = m.taken_at || '';
-  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}">
-    <img loading="lazy" src="/api/media/${m.id}/thumb" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
+  const ts = (state.view==='uploads' ? m.added_at : m.taken_at) || '';
+  // The ~1 KB 32px tier paints the tile's colour and shape immediately; the
+  // real thumb (lazy) covers it when it lands.
+  return `<div class="tile${on}" data-idx="${idx}" data-id="${esc(m.id)}" data-ts="${ts}" style="background-image:url('${thumbUrl(m,32)}')">
+    <img loading="lazy" src="${thumbUrl(m, gridThumbW())}" alt="${esc(m.name)}"/><span class="sel">✓</span>${fav}${badge}</div>`;
+}
+// Versioned thumb URL: the server marks it immutable, so a reload never
+// re-fetches a tile; edit/rotate bump edit_version and thereby the URL.
+// w picks a size tier (32 / 160 / 480 / 1024); omitted = the 480 default.
+function thumbUrl(m, w){ return `/api/media/${m.id}/thumb?v=${m.edit_version||0}${w? '&w='+w : ''}`; }
+function previewUrl(m){ return `/api/media/${m.id}/preview?v=${m.edit_version||0}`; }
+// Large tiles on a high-DPI screen would upscale the 480 thumb; ask for 1024.
+function gridThumbW(){
+  const t = document.querySelector('#grid .tile');
+  const px = (t? t.clientWidth : 200) * (window.devicePixelRatio || 1);
+  return px > 520 ? 1024 : 480;
+}
+function dayKey(ts){
+  if(!ts) return 'Upload date unknown';
+  const d = new Date(ts*1000);
+  return isNaN(d)? 'Upload date unknown' : 'Uploaded '+d.toLocaleDateString(undefined, {day:'numeric', month:'long', year:'numeric'});
 }
 function monthKey(m){
   // Label only from the real capture date — a missing date is "unknown",
@@ -324,7 +506,7 @@ function appendTiles(items){
   let html = '';
   items.forEach((m,i)=>{
     if(withHeaders){
-      const mk = monthKey(m);
+      const mk = state.view==='uploads' ? dayKey(m.added_at) : monthKey(m);
       if(mk && mk !== state.lastMonth){ state.lastMonth = mk; html += `<div class="mhead">${esc(mk)}</div>`; }
     }
     html += tileHTML(m, offset+i);
@@ -355,6 +537,11 @@ function updateSelBar(){
   $('#grid').classList.toggle('selecting', n>0);
   $('#selCount').textContent = n+' selected';
   const inTrash = state.view==='trash';
+  $('#selAlbum').style.display = inTrash? 'none':'';
+  $('#selRemove').style.display = state.view==='ualbum'? '':'none';
+  const locked = state.view==='locked';
+  $('#selLock').style.display = (inTrash || locked || !AUTH.user)? 'none':'';
+  $('#selUnlock').style.display = locked? '':'none';
   $('#selTrash').style.display = inTrash? 'none':'';
   $('#selRestore').style.display = inTrash? '':'none';
   $('#selDelete').style.display = inTrash? '':'none';
@@ -423,25 +610,43 @@ async function loadPeople(){
       <div class="nm">${esc(p.name)}</div><div class="ct">${p.count} photos</div></div>`);
   });
   clusters.forEach(c=>{
-    const label = c.name? esc(c.name) : 'Unnamed';
-    cards.push(`<div class="card" data-cid="${c.id}">
+    const named = !!(c.name && c.name.trim());
+    const label = named? esc(c.name) : 'Unnamed';
+    cards.push(`<div class="card" data-cid="${c.id}" data-cname="${named? esc(c.name) : ''}">
       <img class="av" loading="lazy" src="/api/clusters/${c.id}/thumb"/>
-      <div class="nm">${label}</div><div class="ct">${c.count} faces · click to name</div></div>`);
+      <div class="nm">${label}</div><div class="ct">${c.count} faces · <a href="#" class="rn" data-rn="${c.id}">${named? 'rename' : 'name this person'}</a></div></div>`);
   });
   $('#cards').innerHTML = cards.join('');
-  $('#cards').querySelectorAll('[data-cid]').forEach(el=> el.addEventListener('click', ()=> openCluster(parseInt(el.dataset.cid,10))));
+  $('#cards').querySelectorAll('[data-cid]').forEach(el=> el.addEventListener('click', ()=> openCluster(parseInt(el.dataset.cid,10), el.dataset.cname)));
+  $('#cards').querySelectorAll('[data-rn]').forEach(el=> el.addEventListener('click', ev=>{
+    ev.preventDefault(); ev.stopPropagation();   // don't also open the cluster
+    renameCluster(parseInt(el.dataset.rn,10), el.closest('[data-cid]').dataset.cname);
+  }));
   $('#cards').querySelectorAll('[data-pid]').forEach(el=> el.addEventListener('click', ()=> openPerson(parseInt(el.dataset.pid,10), el.dataset.pname)));
   $('#status').textContent = cards.length? '' :
     'No people yet. Run the face indexer:  PHOTO_ROOT=… .venv/bin/python face_indexer.py';
 }
-async function openCluster(cid){
-  const name = prompt('Name this person (leave blank to just view their photos):');
-  if(name && name.trim()){
-    await api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:name.trim()})});
-    toast('Saved name');
+async function openCluster(cid, name){
+  // An already-named group opens straight to its photos; only an unnamed one
+  // asks for a name, and even then blank just views it.
+  if(!name){ return renameCluster(cid, ''); }
+  const items = await getJSON(`/api/clusters/${cid}/media`);
+  showCollection(name, items);
+}
+async function renameCluster(cid, current){
+  const name = prompt('Name this person (an existing name merges the two groups; blank just views the photos):', current || '');
+  if(name === null){ return; }               // cancelled - do nothing at all
+  const clean = name.trim();
+  if(clean && clean !== current){
+    const r = await getJSON(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+    if(r.merged_into){
+      // Same name as another group: the server merged this one into it.
+      toast(`Merged into “${clean}” (${r.cluster.count} faces)`);
+      cid = r.merged_into;
+    }else toast('Saved name');
   }
   const items = await getJSON(`/api/clusters/${cid}/media`);
-  showCollection(name && name.trim()? name.trim() : 'Person', items);
+  showCollection(clean || current || 'Person', items);
 }
 async function openPerson(pid, name){
   const items = await getJSON(`/api/persons/${pid}/media`);
@@ -451,19 +656,134 @@ async function openPerson(pid, name){
 // ---------- Albums ----------
 async function loadAlbums(){
   $('#grid').style.display='none'; $('#cards').style.display='grid'; $('#status').textContent='Loading albums…';
-  let albums=[];
-  try{ albums = await getJSON('/api/albums'); }catch(e){}
-  $('#cards').innerHTML = albums.map(a=>{
-    const nm = a.album==='_root'? 'Library root' : a.album;
+  let albums=[], mine=[];
+  try{ [mine, albums] = await Promise.all([getJSON('/api/user_albums'), getJSON('/api/albums')]); }catch(e){}
+  // "My albums" are the manual ones (any photo, any folder); "Folders" are
+  // the directories under the library root, read-only.
+  const mineHtml = mine.map(a=>{
     const cover = a.cover
       ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
       : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
-    return `<div class="card" data-album="${esc(a.album)}">
-      ${cover}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
+    return `<div class="card" data-ualbum="${a.id}">
+      ${cover}<div class="nm">${esc(a.name)}</div><div class="ct">${a.count} items${a.share_token?' · shared':''}</div></div>`;
   }).join('');
+  const coverOf = a => a.cover
+      ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
+      : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
+  // Phone folders: uploads grouped by the folder they came from on the
+  // device (Camera, WhatsApp Images...), as reported by the backup app.
+  const phoneHtml = albums.filter(a=>a.folder).map(a=>
+    `<div class="card" data-album="uploads" data-folder="${esc(a.folder)}">
+      ${coverOf(a)}<div class="nm">${esc(a.folder)}</div><div class="ct">${a.count} items${a.device? ' · '+esc(a.device) : ''}</div></div>`).join('');
+  const foldersHtml = albums.filter(a=>!a.folder).map(a=>{
+    const nm = a.album==='_root'? 'Library root' : a.album;
+    return `<div class="card" data-album="${esc(a.album)}">
+      ${coverOf(a)}<div class="nm">${esc(nm)}</div><div class="ct">${a.count} items</div></div>`;
+  }).join('');
+  $('#cards').innerHTML =
+    `<div class="sect">My albums</div>
+     <div class="card" id="newAlbumCard"><div class="sq new">＋</div><div class="nm">New album</div><div class="ct">&nbsp;</div></div>${mineHtml}
+     ${phoneHtml? '<div class="sect">Phone folders</div>'+phoneHtml : ''}
+     <div class="sect">Folders</div>${foldersHtml}`;
+  $('#newAlbumCard').addEventListener('click', createAlbumPrompt);
+  $('#cards').querySelectorAll('[data-ualbum]').forEach(el=>
+    el.addEventListener('click', ()=> switchView('ualbum', {id: el.dataset.ualbum})));
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
-    el.addEventListener('click', ()=> switchView('photos', {album: el.dataset.album})));
-  $('#status').textContent = albums.length? '' : 'No albums.';
+    el.addEventListener('click', ()=> switchView('photos', el.dataset.folder? {album: el.dataset.album, folder: el.dataset.folder} : {album: el.dataset.album})));
+  $('#status').textContent = (albums.length || mine.length)? '' : 'No albums.';
+}
+async function createAlbumPrompt(){
+  const name = prompt('Album name'); if(name===null) return;
+  const clean = name.trim(); if(!clean) return;
+  const r = await getJSON('/api/user_albums', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+  switchView('ualbum', {id: r.album.id});
+}
+
+// ---------- Manual album view ----------
+async function loadUserAlbum(id){
+  $('#cards').style.display='none'; $('#grid').style.display='grid'; $('#grid').innerHTML='';
+  state.done = true;   // static list, no paging
+  let a, items=[];
+  try{ [a, items] = await Promise.all([getJSON(`/api/user_albums/${id}`), getJSON(`/api/user_albums/${id}/media`)]); }
+  catch(e){ $('#status').textContent='Album not found.'; return; }
+  $('#crumb').style.display='flex';
+  $('#crumb').innerHTML = `<span style="cursor:pointer" id="crumbBack">‹ Albums</span> · <b>${esc(a.name)}</b> · ${a.count} items
+    <span class="acts">
+      <button class="btn" onclick="renameAlbum(${a.id}, '${esc(a.name).replace(/'/g,'&#39;')}')">Rename</button>
+      ${a.locked? '' : `<button class="btn" onclick="shareAlbum(${a.id})">${a.share_token? 'Share link' : 'Share'}</button>`}
+      ${AUTH.user? `<button class="btn" onclick="lockAlbum(${a.id}, ${a.locked? 'false':'true'})">${a.locked? '🔓 Unlock album' : '🔒 Lock album'}</button>` : ''}
+      <button class="btn danger" onclick="deleteAlbum(${a.id})">Delete album</button>
+    </span>`;
+  $('#crumbBack').addEventListener('click', ()=> switchView('albums'));
+  state.items.push(...items); appendTiles(items);
+  $('#status').textContent = items.length? '' : 'Empty album — select photos anywhere and use “＋ Album”.';
+}
+async function renameAlbum(id, current){
+  const name = prompt('Album name', current); if(name===null) return;
+  const clean = name.trim(); if(!clean || clean===current) return;
+  await api(`/api/user_albums/${id}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+  toast('Renamed'); loadUserAlbum(id);
+}
+async function shareAlbum(id){
+  const r = await getJSON(`/api/user_albums/${id}/share`, {method:'POST'});
+  const url = location.origin + r.url;
+  try{ await navigator.clipboard.writeText(url); toast('Link copied: '+url); }
+  catch(e){ prompt('Public album link (anyone with it can view):', url); }
+}
+async function deleteAlbum(id){
+  if(!confirm('Delete this album? The photos stay in the library.')) return;
+  await api(`/api/user_albums/${id}`, {method:'DELETE'});
+  toast('Album deleted'); switchView('albums');
+}
+async function removeSelFromAlbum(){
+  const ids = [...state.sel]; if(!ids.length || state.view!=='ualbum') return;
+  await getJSON(`/api/user_albums/${state.params.id}/items`, {...idsPost(ids), method:'DELETE'});
+  toast(`Removed ${ids.length}`);
+  state.sel.clear(); updateSelBar();
+  state.items=[]; loadUserAlbum(state.params.id);
+}
+
+// ---------- Add-to-album picker (selection bar and viewer) ----------
+let pickerIds = [];
+async function openAlbumPicker(ids){
+  pickerIds = (ids||[]).filter(Boolean); if(!pickerIds.length) return;
+  await renderAlbumPicker();
+  $('#albumpop').classList.add('on');
+}
+function closeAlbumPicker(){ $('#albumpop').classList.remove('on'); }
+async function renderAlbumPicker(){
+  // With one item the list shows membership and toggles; with many it adds.
+  const single = pickerIds.length===1;
+  let albums=[]; try{ albums = await getJSON('/api/user_albums'+(single? '?media_id='+encodeURIComponent(pickerIds[0]) : '')); }catch(e){}
+  $('#albumpop h4').firstChild.textContent = single? 'Add to album ' : `Add ${pickerIds.length} items to album `;
+  $('#albumList').innerHTML = albums.map(a=>`
+    <div class="prow" data-aid="${a.id}">${esc(a.name)} <span class="n">${a.count}</span><span class="chk">${a.contains?'✓':''}</span></div>`).join('')
+    || '<div style="color:var(--dim);font-size:12px">No albums yet — create one below.</div>';
+  $('#albumList').querySelectorAll('[data-aid]').forEach(el=>
+    el.addEventListener('click', ()=> toggleAlbumMembership(parseInt(el.dataset.aid,10), el)));
+}
+async function toggleAlbumMembership(aid, el){
+  const has = el.querySelector('.chk').textContent==='✓';
+  const single = pickerIds.length===1;
+  if(single && has){
+    await getJSON(`/api/user_albums/${aid}/items`, {...idsPost(pickerIds), method:'DELETE'});
+    el.querySelector('.chk').textContent=''; toast('Removed from album');
+    if(state.view==='ualbum' && String(aid)===String(state.params.id)){ state.items=[]; loadUserAlbum(aid); }
+    return;
+  }
+  const r = await getJSON(`/api/user_albums/${aid}/items`, idsPost(pickerIds));
+  el.querySelector('.chk').textContent='✓';
+  toast(r.added? `Added ${r.added} to album` : 'Already in album');
+  if(!single){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+}
+async function createAlbumFromPicker(){
+  const inp = $('#newAlbum'); const name = inp.value.trim(); if(!name) return;
+  const r = await getJSON('/api/user_albums', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name, media_ids: pickerIds})});
+  inp.value='';
+  toast(`Created “${r.album.name}” with ${r.album.count}`);
+  if(pickerIds.length>1){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+  else renderAlbumPicker();
 }
 
 // ---------- Cameras / Devices ----------
@@ -543,27 +863,31 @@ function renderViewer(){
   const m = curItem(); if(!m) return;
   const stage = $('#stage');
   if(m.kind==='video'){
-    // Safari needs a seekable (Range) source: serve the original for native
-    // containers and fall back to the live transcode if it can't decode it.
-    const nat = ['.mp4','.mov','.m4v'].includes(m.ext);
-    const primary = nat? `/api/media/${m.id}/full` : `/api/media/${m.id}/stream.mp4`;
-    stage.innerHTML = `<video controls autoplay playsinline src="${primary}"></video>`;
-    if(nat){
-      const v = stage.querySelector('video');
-      v.addEventListener('error', ()=>{
-        if(v.dataset.fb) return;
-        v.dataset.fb = 1;
-        v.src = `/api/media/${m.id}/stream.mp4`;
-        v.play().catch(()=>{});
-      });
-    }
+    // /play redirects to the original (seekable, Range) when this browser
+    // can decode it and the bitrate suits Wi-Fi, else to the live 1080p
+    // transcode. If the original still fails to decode, fall back once.
+    const v0 = document.createElement('video');
+    const codecs = ['h264'];
+    if(v0.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') || v0.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"')) codecs.push('hevc');
+    if(v0.canPlayType('video/mp4; codecs="av01.0.05M.08"')) codecs.push('av1');
+    stage.innerHTML = `<video controls autoplay playsinline src="/api/media/${m.id}/play?codecs=${codecs.join(',')}"></video>`;
+    const v = stage.querySelector('video');
+    v.addEventListener('error', ()=>{
+      if(v.dataset.fb) return;
+      v.dataset.fb = 1;
+      v.src = `/api/media/${m.id}/stream.mp4`;
+      v.play().catch(()=>{});
+    });
   }else{
-    // Browsers render JPEG/PNG/GIF/WebP natively; everything else gets
-    // converted server-side.
-    const native = ['.jpg','.jpeg','.png','.gif','.webp'].includes(m.ext);
-    const as = native? '' : '?as=jpeg';
-    stage.innerHTML = `<img src="/api/media/${m.id}/full${as}"/>`;
+    // The viewer shows the cached 2048px preview (any format, EXIF-rotated,
+    // immutable-cached), not the original: a 12 MP JPEG or a HEIC transcode
+    // per swipe was the slowest thing in the app. ⤢ opens the original.
+    stage.innerHTML = `<img src="${previewUrl(m)}"/>`;
   }
+  $('#vFull').style.display = m.kind==='video'? 'none':'';
+  $('#vLock').style.display = AUTH.user? '' : 'none';
+  $('#vLock').title = state.view==='locked'? 'Unlock (back to the library)' : 'Move to Locked folder';
+  $('#vLock').textContent = state.view==='locked'? '🔓' : '🔒';
   $('#vFav').classList.toggle('on', !!m.favorite);
   $('#tagpop').classList.remove('on');
   $('#infopop').classList.remove('on');
@@ -610,6 +934,11 @@ function idPhotoCurrent(){
 }
 
 // ---------- Share ----------
+function openFull(){
+  const m = curItem(); if(!m) return;
+  const native = ['.jpg','.jpeg','.png','.gif','.webp'].includes(m.ext);
+  window.open(`/api/media/${m.id}/full${native? '' : '?as=jpeg'}`, '_blank');
+}
 async function shareCurrent(){
   const m = curItem(); if(!m) return;
   toast('Preparing…');
@@ -649,14 +978,28 @@ async function toggleInfo(){
       {year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : null;
   const fmtSize = b => b==null? null : (b>=1e9? (b/1e9).toFixed(2)+' GB' : b>=1e6? (b/1e6).toFixed(1)+' MB' : Math.round(b/1e3)+' KB');
   const cam = [d.camera_make, d.camera_model].filter(Boolean).join(' ') || null;
+  const ex = d.exposure || {}, vi = d.video || {};
   const rows = [
     ['Name', d.name],
     ['Date taken', fmtDate(d.taken_at)],
     ['Camera', cam],
+    ['Lens', ex.lens],
+    ['Aperture', ex.aperture],
+    ['Shutter', ex.shutter],
+    ['ISO', ex.iso],
+    ['Focal length', ex.focal_length],
+    ['Exposure bias', ex.exposure_bias],
+    ['Flash', ex.flash],
+    ['Duration', vi.duration],
+    ['Codec', vi.codec],
+    ['Frame rate', vi.frame_rate],
+    ['Bitrate', vi.bitrate],
     ['Resolution', d.width&&d.height? `${d.width} × ${d.height}` : null],
     ['Type', [(d.kind||''), (d.ext||'').replace('.','').toUpperCase()].filter(Boolean).join(' · ')],
     ['Size', fmtSize(d.size)],
     ['Folder', d.album],
+    ['Phone folder', d.source_folder],
+    ['Backed up from', d.source_device],
     ['Place', d.place],
     ['Location', d.lat!=null&&d.lng!=null? `${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}` : null],
     ['File date', fmtDate(d.mtime)],
@@ -703,9 +1046,19 @@ async function addPerson(){
 }
 
 // ---------- header / health / scan polling ----------
+let UI_VERSION = null;
 async function refreshHealth(){
   try{
     const h = await getJSON('/api/health');
+    // A home-screen web app can stay open for days and keep running old
+    // code after a server update. Reload once the page on disk is newer,
+    // but never mid-upload or while the viewer is open.
+    if(h.ui_version){
+      if(UI_VERSION === null) UI_VERSION = h.ui_version;
+      else if(h.ui_version !== UI_VERSION && !(state.uploading) && !$('#viewer').classList.contains('on')){
+        location.reload(); return false;
+      }
+    }
     $('#count').textContent = h.items_indexed+' items';
     CLIP_OK = (h.clip_indexed||0) > 0;
     const s = h.scan||{};
@@ -731,11 +1084,13 @@ async function uploadFiles(fileList){
     const r = await fetch('/api/upload', {method:'POST', body:fd});
     if(!r.ok) throw {status:r.status};
     const data = await r.json();
-    const ok = (data.items||[]).filter(i=>i.indexed).length;
-    toast(`Uploaded ${ok}/${data.count} — added to library`);
+    const items = data.items||[];
+    const dup = items.filter(i=>i.duplicate).length;
+    const ok = items.filter(i=>i.indexed).length - dup;
+    toast(`Uploaded ${ok}/${data.count}` + (dup? ` (${dup} already in library)` : ''));
     refreshHealth();
-    // jump to Photos and reload so the new items show at the top
-    switchView('photos');
+    // Uploads live in their own album, so show them where they land.
+    switchView('uploads');
   }catch(e){ toast('Upload failed ('+(e.status||e)+')'); }
   $('#fileInput').value = '';
 }
@@ -760,7 +1115,12 @@ document.querySelector('main').addEventListener('scroll', ()=>{
   if(!tile) return;
   const ts = parseFloat(tile.dataset.ts);
   const b = $('#datebadge');
-  if(ts){
+  // Recently uploaded is ordered and grouped by upload time, so the badge
+  // must say so: a bare "September 2026" over a 2019 holiday photo reads as
+  // its capture date. dayKey() keeps badge and section headers identical.
+  if(state.view==='uploads'){
+    b.textContent = dayKey(ts || 0);
+  }else if(ts){
     const d = new Date(ts*1000);
     if(isNaN(d)) return;
     b.textContent = d.toLocaleString(undefined, {month:'long', year:'numeric'});
@@ -774,14 +1134,14 @@ document.querySelector('main').addEventListener('scroll', ()=>{
 
 // ---------- infinite scroll ----------
 io = new IntersectionObserver(entries=>{
-  if(entries[0].isIntersecting && ['photos','favorites','videos','trash','unknown-photos','unknown-videos'].includes(state.view)) loadGrid(false);
+  if(entries[0].isIntersecting && ['photos','favorites','videos','trash','unknown-photos','unknown-videos','uploads'].includes(state.view)) loadGrid(false);
 }, {rootMargin:'600px'});
 io.observe($('#sentinel'));
 
 // ---------- boot ----------
 refreshHealth().then(r=>{ if(r) pollScan(); });
 history.replaceState({view:'photos', params:{}}, '');
-switchView('photos', {}, true);
+refreshAuth().then(()=> switchView('photos', {}, true));
 </script>
 </body>
 </html>

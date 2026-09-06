@@ -204,7 +204,7 @@ fun ClusterMediaScreen(
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current)
-                                    .data(Urls.thumb(serverUrl, m.id))
+                                    .data(Urls.thumb(serverUrl, m.id, m.editVersion))
                                     .crossfade(true)
                                     .build(),
                                 contentDescription = m.name,

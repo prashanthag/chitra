@@ -16,6 +16,43 @@ interface PhotoApi {
     @GET("api/health")
     suspend fun health(): Health
 
+    // Accounts and the Locked folder
+    @GET("api/auth/state")
+    suspend fun authState(): AuthState
+
+    @POST("api/login")
+    suspend fun login(@retrofit2.http.Body body: LoginBody): LoginResp
+
+    @POST("api/logout")
+    suspend fun logout(): OkResp
+
+    @GET("api/users")
+    suspend fun users(): List<User>
+
+    @POST("api/users")
+    suspend fun createUser(@retrofit2.http.Body body: NewUserBody): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @retrofit2.http.DELETE("api/users/{id}")
+    suspend fun deleteUser(@Path("id") id: Int): OkResp
+
+    @POST("api/locked/unlock")
+    suspend fun unlockLocked(@retrofit2.http.Body body: PasswordBody): Map<String, kotlinx.serialization.json.JsonElement>
+
+    @POST("api/locked/lock")
+    suspend fun lockLocked(): OkResp
+
+    @POST("api/media/lock")
+    suspend fun lockMedia(@retrofit2.http.Body body: IdsBody): LockResp
+
+    @POST("api/media/unlock")
+    suspend fun unlockMedia(@retrofit2.http.Body body: IdsBody): LockResp
+
+    @POST("api/user_albums/{id}/lock")
+    suspend fun lockUserAlbum(@Path("id") id: Int): OkResp
+
+    @POST("api/user_albums/{id}/unlock")
+    suspend fun unlockUserAlbum(@Path("id") id: Int): OkResp
+
     @GET("api/media/{id}")
     suspend fun meta(@retrofit2.http.Path("id") id: String): MediaItem
 
@@ -25,6 +62,8 @@ interface PhotoApi {
         @Query("per_page") perPage: Int = 60,
         @Query("kind") kind: String? = null,
         @Query("album") album: String? = null,
+        /** Phone folder inside the uploads album (see Album.folder). */
+        @Query("folder") folder: String? = null,
         @Query("q") q: String? = null,
         @Query("favorites") favorites: Int? = null,
         @Query("year") year: Int? = null,
@@ -33,10 +72,36 @@ interface PhotoApi {
         @Query("archived") archived: Int? = null,
         @Query("dated") dated: Int? = null,
         @Query("undated") undated: Int? = null,
+        /** 1 = my Locked folder (the session must be unlocked first). */
+        @Query("locked") locked: Int? = null,
+        /** "added" = newest upload first (Recently uploaded); default is capture date. */
+        @Query("sort") sort: String? = null,
     ): MediaPage
 
     @GET("api/albums")
     suspend fun albums(): List<Album>
+
+    // Manual albums
+    @GET("api/user_albums")
+    suspend fun userAlbums(@Query("media_id") mediaId: String? = null): List<UserAlbum>
+
+    @POST("api/user_albums")
+    suspend fun createUserAlbum(@retrofit2.http.Body body: NewAlbumBody): UserAlbumResp
+
+    @GET("api/user_albums/{id}/media")
+    suspend fun userAlbumMedia(@Path("id") id: Int): List<MediaItem>
+
+    @POST("api/user_albums/{id}/items")
+    suspend fun addToUserAlbum(@Path("id") id: Int, @retrofit2.http.Body body: IdsBody): UserAlbumResp
+
+    @retrofit2.http.HTTP(method = "DELETE", path = "api/user_albums/{id}/items", hasBody = true)
+    suspend fun removeFromUserAlbum(@Path("id") id: Int, @retrofit2.http.Body body: IdsBody): UserAlbumResp
+
+    @retrofit2.http.DELETE("api/user_albums/{id}")
+    suspend fun deleteUserAlbum(@Path("id") id: Int): OkResp
+
+    @POST("api/user_albums/{id}/share")
+    suspend fun shareUserAlbum(@Path("id") id: Int): AlbumShareResp
 
     @GET("api/timeline")
     suspend fun timeline(): List<TimelineBucket>
@@ -106,6 +171,7 @@ interface PhotoApi {
                 level = HttpLoggingInterceptor.Level.BASIC
             }
             val client = OkHttpClient.Builder()
+                .addInterceptor(Auth.interceptor)
                 .addInterceptor(logging)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
@@ -122,8 +188,22 @@ interface PhotoApi {
 }
 
 object Urls {
-    fun thumb(baseUrl: String, id: String): String =
-        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb"
+    /**
+     * Thumb URL. With a version the server marks the response immutable and
+     * Coil never re-fetches, so only pass one that came from the server
+     * (edit_version); a caller that has no version gets the short-lived
+     * unversioned URL instead of pinning "?v=0" forever.
+     */
+    fun thumb(baseUrl: String, id: String, version: Int? = null, w: Int? = null): String {
+        val q = listOfNotNull(version?.let { "v=$it" }, w?.let { "w=$it" })
+        return (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/thumb" +
+            (if (q.isEmpty()) "" else "?" + q.joinToString("&"))
+    }
+
+    /** Viewer-sized (2048px) JPEG of a photo, cached and versioned like a thumb. */
+    fun preview(baseUrl: String, id: String, version: Int? = null): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/preview" +
+            (if (version != null) "?v=$version" else "")
 
     fun full(baseUrl: String, id: String, asJpeg: Boolean = false): String {
         val base = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
@@ -132,6 +212,14 @@ object Urls {
 
     fun stream(baseUrl: String, id: String): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/stream.mp4"
+
+    /**
+     * Playback URL: the server redirects to the original when the phone can
+     * decode it and the bitrate suits Wi-Fi, else to the 1080p transcode.
+     * Every Android device since 2017 decodes HEVC in hardware.
+     */
+    fun play(baseUrl: String, id: String, codecs: String = "h264,hevc"): String =
+        (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/media/$id/play?codecs=$codecs"
 
     fun clusterThumb(baseUrl: String, id: Int): String =
         (if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/") + "api/clusters/$id/thumb"

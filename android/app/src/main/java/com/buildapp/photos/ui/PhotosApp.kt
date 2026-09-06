@@ -4,6 +4,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.Collections
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -74,6 +92,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.buildapp.photos.api.Album
+import com.buildapp.photos.data.DebugHooks
+import com.buildapp.photos.api.IdsBody
+import com.buildapp.photos.api.NewAlbumBody
+import com.buildapp.photos.api.PhotoApi
+import com.buildapp.photos.api.UserAlbum
 import com.buildapp.photos.api.Cluster
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.Urls
@@ -86,9 +109,16 @@ private sealed interface Route {
     data class ClusterMedia(val cluster: Cluster) : Route
     data object Albums : Route
     data class AlbumMedia(val album: Album) : Route
+    data class UserAlbumMedia(val album: UserAlbum) : Route
     data object Map : Route
     data class Editor(val item: MediaItem) : Route
+    data object Settings : Route
+    /** One of the library views that used to be a filter chip (Favorites, Videos, Trash...). */
+    data class Collection(val filter: Filter) : Route
 }
+
+/** Bottom navigation destinations of the home screen. */
+private enum class Tab(val label: String) { PHOTOS("Photos"), SEARCH("Search"), COLLECTIONS("Collections") }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,9 +126,29 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     val state by vm.state.collectAsState()
     var liveViewerIndex by remember { mutableStateOf<Int?>(null) }
     var staticViewer by remember { mutableStateOf<Pair<List<MediaItem>, Int>?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
-    var showSearch by remember { mutableStateOf(false) }
-    var route by remember { mutableStateOf<Route>(Route.Gallery) }
+    var tab by remember { mutableStateOf(Tab.PHOTOS) }
+    // A debug launch extra (filter=uploads) opens that collection directly.
+    var route by remember {
+        val initial = Filter.byName(DebugHooks.initialFilter)
+        mutableStateOf<Route>(if (initial != null && initial != Filter.ALL) Route.Collection(initial) else Route.Gallery)
+    }
+    // "Add to album" from any viewer opens one picker; the album screen
+    // reloads when the picker changes something.
+    var albumPickFor by remember { mutableStateOf<MediaItem?>(null) }
+    var albumsChanged by remember { mutableStateOf(0) }
+    albumPickFor?.let { item ->
+        AddToAlbumDialog(serverUrl = state.serverUrl, item = item,
+            onDismiss = { albumPickFor = null }, onChanged = { albumsChanged++ })
+    }
+    // Accounts: a 401 anywhere asks to sign in; the Locked folder asks for
+    // the password again. Both come from the view model's flags.
+    if (state.needLogin) LoginDialog(vm = vm, onDismiss = { vm.clearAuthPrompts() })
+    var unlockThen by remember { mutableStateOf<(() -> Unit)?>(null) }
+    if (state.needUnlock || unlockThen != null) UnlockDialog(
+        vm = vm,
+        onDismiss = { vm.clearAuthPrompts(); unlockThen = null; if (route is Route.Collection && (route as Route.Collection).filter == Filter.LOCKED) { vm.setFilter(Filter.ALL); route = Route.Gallery } },
+        onUnlocked = { vm.clearAuthPrompts(); unlockThen?.invoke(); unlockThen = null },
+    )
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -106,36 +156,33 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     // System back walks the UI hierarchy (viewer → overlays → sub-screen →
     // gallery) instead of killing the app; only exits from the home gallery.
     androidx.activity.compose.BackHandler(
-        enabled = liveViewerIndex != null || staticViewer != null || showSettings || showSearch || route != Route.Gallery
+        enabled = liveViewerIndex != null || staticViewer != null || route != Route.Gallery || tab != Tab.PHOTOS
     ) {
         when {
             liveViewerIndex != null -> liveViewerIndex = null
             staticViewer != null -> staticViewer = null
-            showSettings -> showSettings = false
-            showSearch -> showSearch = false
             route is Route.Editor -> route = Route.Gallery
             route is Route.ClusterMedia -> route = Route.People
             route is Route.AlbumMedia -> route = Route.Albums
+            route is Route.UserAlbumMedia -> route = Route.Albums
+            route is Route.Collection -> { vm.setFilter(Filter.ALL); route = Route.Gallery; tab = Tab.COLLECTIONS }
             route != Route.Gallery -> route = Route.Gallery
+            tab != Tab.PHOTOS -> { if (tab == Tab.SEARCH) vm.setQuery(""); tab = Tab.PHOTOS }
         }
     }
+    // The photo picker caps multi-select at MediaStore.getPickImagesMaxLimit()
+    // (100 on Android 13+); 50 keeps one manual batch reasonable.
     val pickMedia = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 20),
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50),
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            scope.launch {
-                snackbar.showSnackbar("Uploading ${uris.size}…")
-                val res = withContext(Dispatchers.IO) {
-                    com.buildapp.photos.data.Uploader.upload(context, state.serverUrl, uris)
-                }
-                res.fold(
-                    onSuccess = { n ->
-                        snackbar.showSnackbar("Uploaded $n")
-                        vm.refresh()
-                    },
-                    onFailure = { snackbar.showSnackbar("Upload failed: ${it.message}") },
-                )
-            }
+        if (uris.isNotEmpty()) vm.uploadPicked(uris)
+    }
+    // When a manual upload finishes, summarize it once and clear the bar.
+    LaunchedEffect(state.upload?.running) {
+        val u = state.upload
+        if (u != null && !u.running) {
+            snackbar.showSnackbar(u.summary)
+            vm.clearUpload()
         }
     }
 
@@ -174,7 +221,32 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 onBack = { route = Route.Gallery },
                 onAlbumSelected = { route = Route.AlbumMedia(it) },
+                onUserAlbumSelected = { route = Route.UserAlbumMedia(it) },
             )
+            return
+        }
+        is Route.UserAlbumMedia -> {
+            UserAlbumScreen(
+                serverUrl = state.serverUrl,
+                album = r.album,
+                onBack = { route = Route.Albums },
+                onDeleted = { route = Route.Albums },
+                onItemClick = { l, i -> staticViewer = l to i },
+                reloadKey = albumsChanged,
+            )
+            staticViewer?.let { (list, idx) ->
+                ViewerDialog(
+                    items = list,
+                    initialIndex = idx,
+                    serverUrl = state.serverUrl,
+                    onDismiss = { staticViewer = null },
+                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onTrash = { vm.trash(it) },
+                    onArchive = { vm.archive(it) },
+                    onRestore = { vm.restore(it) },
+                    onAddToAlbum = { albumPickFor = it },
+                )
+            }
             return
         }
         is Route.AlbumMedia -> {
@@ -194,6 +266,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
+                    onAddToAlbum = { albumPickFor = it },
                 )
             }
             return
@@ -227,14 +300,60 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             )
             return
         }
+        is Route.Settings -> {
+            SettingsScreen(
+                serverUrl = state.serverUrl,
+                onBack = { route = Route.Gallery },
+                onServerUrlSaved = { vm.setServerUrl(it) },
+            )
+            return
+        }
+        is Route.Collection -> {
+            LaunchedEffect(r.filter) { vm.setFilter(r.filter) }
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text(r.filter.label) },
+                        navigationIcon = {
+                            IconButton(onClick = { vm.setFilter(Filter.ALL); route = Route.Gallery; tab = Tab.COLLECTIONS }) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                            }
+                        },
+                    )
+                },
+            ) { padding ->
+                Box(Modifier.padding(padding).fillMaxSize()) {
+                    GalleryBody(state = state, uploadsFeed = r.filter == Filter.UPLOADS,
+                        onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
+                        onLoadMore = { vm.loadNext() }, onRetry = { vm.refresh() }, onSettings = { route = Route.Settings })
+                }
+            }
+            liveViewerIndex?.let { idx ->
+                ViewerDialog(
+                    items = state.items, initialIndex = idx, serverUrl = state.serverUrl,
+                    onDismiss = { liveViewerIndex = null },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, onTrash = { vm.trash(it) },
+                    onArchive = { vm.archive(it) }, onRestore = { vm.restore(it) }, onRotate = { vm.rotate(it) },
+                    onEdit = { route = Route.Editor(it); liveViewerIndex = null },
+                    onAddToAlbum = { albumPickFor = it },
+                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
+                    lockedView = r.filter == Filter.LOCKED,
+                )
+            }
+            return
+        }
         else -> Unit
     }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            FloatingActionButton(onClick = {
-                pickMedia.launch(
+            if (tab == Tab.PHOTOS) FloatingActionButton(onClick = {
+                // One batch at a time: a pick made mid-upload used to be
+                // silently discarded.
+                if (state.upload?.running == true) {
+                    scope.launch { snackbar.showSnackbar("Still uploading the last batch") }
+                } else pickMedia.launch(
                     androidx.activity.result.PickVisualMediaRequest(
                         ActivityResultContracts.PickVisualMedia.ImageAndVideo,
                     ),
@@ -244,74 +363,101 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             }
         },
         topBar = {
-            TopAppBar(
+            // One title and one icon. Everything else that used to crowd the
+            // top bar lives in the bottom navigation and under Collections.
+            if (tab != Tab.SEARCH) TopAppBar(
                 title = {
                     Column {
-                        Text("Photos", fontSize = 18.sp)
-                        Text(
-                            text = subtitleFor(state),
-                            fontSize = 11.sp,
-                            color = Color.Gray,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        Text(tab.label, fontSize = 20.sp)
+                        if (tab == Tab.PHOTOS) Text(
+                            text = subtitleFor(state), fontSize = 11.sp, color = Color.Gray,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
                     }
                 },
                 actions = {
-                    IconButton(onClick = { route = Route.Map }) {
-                        Icon(Icons.Default.Map, contentDescription = "Map")
-                    }
-                    IconButton(onClick = { route = Route.Albums }) {
-                        Icon(Icons.Default.PhotoAlbum, contentDescription = "Albums")
-                    }
-                    IconButton(onClick = { route = Route.People }) {
-                        Icon(Icons.Default.Face, contentDescription = "People")
-                    }
-                    IconButton(onClick = { showSearch = !showSearch }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
-                    }
-                    IconButton(onClick = { showSettings = true }) {
+                    IconButton(onClick = { route = Route.Settings }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
             )
         },
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            if (showSearch) {
-                SearchBar(
-                    initial = state.query,
-                    semantic = state.semantic,
-                    onApply = { vm.setQuery(it) },
-                    onSemanticChange = { vm.setSemantic(it) },
-                    onClose = { showSearch = false; vm.setQuery("") },
-                )
-            }
-            FilterRow(current = state.filter, onSelect = { vm.setFilter(it) })
-            state.memories?.takeIf { it.groups.isNotEmpty() }?.let { mem ->
-                MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { staticViewer = listOf(it) to 0 })
-            }
-            Box(Modifier.fillMaxSize()) {
-                when {
-                    state.error != null && state.items.isEmpty() -> ErrorView(
-                        error = state.error!!,
-                        serverUrl = state.serverUrl,
-                        onRetry = { vm.refresh() },
-                        onSettings = { showSettings = true },
-                    )
-                    state.items.isEmpty() && state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                    state.items.isEmpty() && !state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                        Text("No items", color = Color.Gray)
-                    }
-                    else -> Gallery(
-                        items = state.items,
-                        serverUrl = state.serverUrl,
-                        onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
-                        onLoadMore = { vm.loadNext() },
+        bottomBar = {
+            NavigationBar {
+                Tab.entries.forEach { t ->
+                    NavigationBarItem(
+                        selected = tab == t,
+                        onClick = {
+                            if (tab == Tab.SEARCH && t != Tab.SEARCH) vm.setQuery("")
+                            tab = t
+                        },
+                        icon = {
+                            Icon(
+                                when (t) {
+                                    Tab.PHOTOS -> Icons.Default.Photo
+                                    Tab.SEARCH -> Icons.Default.Search
+                                    Tab.COLLECTIONS -> Icons.Default.Collections
+                                },
+                                contentDescription = t.label,
+                            )
+                        },
+                        label = { Text(t.label) },
                     )
                 }
+            }
+        },
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            when (tab) {
+                Tab.PHOTOS -> {
+                    state.upload?.let { u ->
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                            Text(
+                                if (u.running) "Uploading ${u.done}/${u.total}…" else u.summary,
+                                fontSize = 12.sp, color = Color.Gray,
+                            )
+                            androidx.compose.material3.LinearProgressIndicator(
+                                progress = { if (u.total == 0) 0f else u.done.toFloat() / u.total },
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            )
+                        }
+                    }
+                    state.memories?.takeIf { it.groups.isNotEmpty() }?.let { mem ->
+                        MemoriesRow(memories = mem, serverUrl = state.serverUrl, onClick = { staticViewer = listOf(it) to 0 })
+                    }
+                    GalleryBody(state = state, uploadsFeed = false,
+                        onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
+                        onLoadMore = { vm.loadNext() }, onRetry = { vm.refresh() }, onSettings = { route = Route.Settings })
+                }
+                Tab.SEARCH -> {
+                    SearchBar(
+                        initial = state.query,
+                        semantic = state.semantic,
+                        onApply = { vm.setQuery(it) },
+                        onSemanticChange = { vm.setSemantic(it) },
+                        onClose = { vm.setQuery(""); tab = Tab.PHOTOS },
+                    )
+                    if (state.query.isBlank()) {
+                        Box(Modifier.fillMaxSize(), Alignment.Center) {
+                            Text("Search by file name, or turn on Smart for \"beach\", \"birthday cake\"…", color = Color.Gray,
+                                modifier = Modifier.padding(32.dp))
+                        }
+                    } else GalleryBody(state = state, uploadsFeed = false,
+                        onItemClick = { m -> liveViewerIndex = state.items.indexOfFirst { it.id == m.id }.coerceAtLeast(0) },
+                        onLoadMore = { vm.loadNext() }, onRetry = { vm.refresh() }, onSettings = { route = Route.Settings })
+                }
+                Tab.COLLECTIONS -> CollectionsTab(
+                    serverUrl = state.serverUrl,
+                    onAlbums = { route = Route.Albums },
+                    onAlbum = { route = Route.AlbumMedia(it) },
+                    onUserAlbum = { route = Route.UserAlbumMedia(it) },
+                    onPeople = { route = Route.People },
+                    onCluster = { route = Route.ClusterMedia(it) },
+                    onMap = { route = Route.Map },
+                    onCollection = { route = Route.Collection(it) },
+                    signedIn = state.user != null,
+                    onLocked = { unlockThen = { route = Route.Collection(Filter.LOCKED) } },
+                )
             }
         }
     }
@@ -328,6 +474,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onRestore = { vm.restore(it) },
             onRotate = { vm.rotate(it) },
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
+            onAddToAlbum = { albumPickFor = it },
+            onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true) } else null,
         )
     }
     staticViewer?.let { (list, idx) ->
@@ -340,13 +488,111 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         )
     }
 
-    if (showSettings) {
-        SettingsDialog(
-            current = state.serverUrl,
-            onDismiss = { showSettings = false },
-            onSave = { vm.setServerUrl(it); showSettings = false },
-        )
+}
+
+@Composable
+private fun LoginDialog(vm: GalleryViewModel, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var pw by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sign in") },
+        text = {
+            Column {
+                Text("This library needs an account.", color = Color.Gray, fontSize = 13.sp)
+                OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
+                    modifier = Modifier.padding(top = 8.dp))
+                OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true, label = { Text("Password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.padding(top = 8.dp))
+                err?.let { Text(it, color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { vm.login(name.trim(), pw) { e -> err = e } }) { Text("Sign in") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun UnlockDialog(vm: GalleryViewModel, onDismiss: () -> Unit, onUnlocked: () -> Unit) {
+    var pw by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Locked folder") },
+        text = {
+            Column {
+                Text("Enter your password to open it.", color = Color.Gray, fontSize = 13.sp)
+                OutlinedTextField(value = pw, onValueChange = { pw = it; err = false }, singleLine = true, label = { Text("Password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.padding(top = 8.dp))
+                if (err) Text("Wrong password", color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = { vm.unlockLocked(pw) { ok -> if (ok) onUnlocked() else err = true } }) { Text("Unlock") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Picker listing every manual album with a check for the ones this item is in; tap toggles. */
+@Composable
+private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -> Unit, onChanged: () -> Unit) {
+    val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    val scope = rememberCoroutineScope()
+    var albums by remember { mutableStateOf<List<UserAlbum>?>(null) }
+    var newName by remember { mutableStateOf("") }
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(item.id, tick) {
+        albums = try { api.userAlbums(mediaId = item.id) } catch (_: Exception) { emptyList() }
     }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to album") },
+        text = {
+            Column {
+                val list = albums
+                when {
+                    list == null -> CircularProgressIndicator()
+                    list.isEmpty() -> Text("No albums yet. Create one below.", color = Color.Gray)
+                    else -> list.forEach { a ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                scope.launch {
+                                    try {
+                                        if (a.contains == true) api.removeFromUserAlbum(a.id, IdsBody(listOf(item.id)))
+                                        else api.addToUserAlbum(a.id, IdsBody(listOf(item.id)))
+                                        onChanged(); tick++
+                                    } catch (_: Exception) {}
+                                }
+                            }.padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(a.name, modifier = Modifier.weight(1f))
+                            Text("${a.count}", color = Color.Gray, fontSize = 12.sp)
+                            if (a.contains == true) Text("  ✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName, onValueChange = { newName = it }, singleLine = true,
+                        label = { Text("New album") }, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        val n = newName.trim(); if (n.isEmpty()) return@TextButton
+                        scope.launch {
+                            try {
+                                api.createUserAlbum(NewAlbumBody(n, listOf(item.id)))
+                                newName = ""; onChanged(); tick++
+                            } catch (_: Exception) {}
+                        }
+                    }) { Text("Create") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 private fun subtitleFor(state: GalleryState): String {
@@ -399,23 +645,152 @@ private fun SearchBar(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+/** Loading / error / empty states around the sectioned grid, shared by every list view. */
 @Composable
-private fun FilterRow(current: Filter, onSelect: (Filter) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(androidx.compose.foundation.rememberScrollState())
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Filter.values().forEach { f ->
-            FilterChip(
-                selected = current == f,
-                onClick = { onSelect(f) },
-                label = { Text(f.name.lowercase().replaceFirstChar { it.titlecase() }) },
+private fun GalleryBody(
+    state: GalleryState,
+    uploadsFeed: Boolean,
+    onItemClick: (MediaItem) -> Unit,
+    onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize()) {
+        when {
+            state.error != null && state.items.isEmpty() -> ErrorView(
+                error = state.error, serverUrl = state.serverUrl, onRetry = onRetry, onSettings = onSettings)
+            state.items.isEmpty() && state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            state.items.isEmpty() && !state.loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                Text("No items", color = Color.Gray)
+            }
+            else -> Gallery(
+                items = state.items, serverUrl = state.serverUrl, uploadsFeed = uploadsFeed,
+                onItemClick = onItemClick, onLoadMore = onLoadMore,
             )
         }
     }
+}
+
+/**
+ * The Collections tab: album and people previews with "See all", Places,
+ * and the library views that used to be filter chips.
+ */
+@Composable
+private fun CollectionsTab(
+    serverUrl: String,
+    onAlbums: () -> Unit,
+    onAlbum: (Album) -> Unit,
+    onUserAlbum: (UserAlbum) -> Unit,
+    onPeople: () -> Unit,
+    onCluster: (Cluster) -> Unit,
+    onMap: () -> Unit,
+    onCollection: (Filter) -> Unit,
+    signedIn: Boolean = false,
+    onLocked: () -> Unit = {},
+) {
+    val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    var userAlbums by remember(serverUrl) { mutableStateOf<List<UserAlbum>>(emptyList()) }
+    var albums by remember(serverUrl) { mutableStateOf<List<Album>>(emptyList()) }
+    var clusters by remember(serverUrl) { mutableStateOf<List<Cluster>>(emptyList()) }
+    LaunchedEffect(serverUrl) {
+        userAlbums = runCatching { api.userAlbums() }.getOrDefault(emptyList())
+        albums = runCatching { api.albums() }.getOrDefault(emptyList())
+        clusters = runCatching { api.clusters() }.getOrDefault(emptyList())
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        SectionHeader("Albums", onSeeAll = onAlbums)
+        androidx.compose.foundation.lazy.LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(userAlbums.take(6), key = { "u${it.id}" }) { a ->
+                CollectionCard(a.name, "${a.count}", a.cover?.let { Urls.thumb(serverUrl, it) }) { onUserAlbum(a) }
+            }
+            items(albums.take(8), key = { it.key }) { a ->
+                CollectionCard(a.label, "${a.count}", a.cover?.let { Urls.thumb(serverUrl, it) }) { onAlbum(a) }
+            }
+        }
+        SectionHeader("People", onSeeAll = onPeople)
+        androidx.compose.foundation.lazy.LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(clusters.take(12), key = { it.id }) { c ->
+                Column(Modifier.width(72.dp).clickable { onCluster(c) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current).data(Urls.clusterThumb(serverUrl, c.id)).crossfade(true).build(),
+                        contentDescription = c.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(64.dp).clip(CircleShape).background(Color(0xFF1A1A1C)),
+                    )
+                    Text(c.name ?: "Unnamed", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp), color = if (c.name == null) Color.Gray else Color.Unspecified)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        CollectionRow(Icons.Default.Map, "Places", "Photos on a map", onMap)
+        androidx.compose.material3.HorizontalDivider(color = Color(0xFF26262A), modifier = Modifier.padding(horizontal = 16.dp))
+        CollectionRow(Icons.Default.Favorite, "Favorites") { onCollection(Filter.FAVORITES) }
+        CollectionRow(Icons.Default.PlayArrow, "Videos") { onCollection(Filter.VIDEOS) }
+        CollectionRow(Icons.Default.CloudUpload, "Recently uploaded", "What the phones sent, newest first") { onCollection(Filter.UPLOADS) }
+        CollectionRow(Icons.Default.HelpOutline, "Unknown date") { onCollection(Filter.UNKNOWN) }
+        CollectionRow(Icons.Default.Archive, "Archive") { onCollection(Filter.ARCHIVED) }
+        CollectionRow(Icons.Default.Delete, "Trash", "Kept 60 days") { onCollection(Filter.TRASH) }
+        if (signedIn) CollectionRow(Icons.Default.Lock, "Locked folder", "Only you, after your password", onLocked)
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, onSeeAll: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onSeeAll).semantics { contentDescription = title }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        Text("See all", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun CollectionCard(title: String, subtitle: String, cover: String?, onClick: () -> Unit) {
+    Column(Modifier.width(120.dp).clickable(onClick = onClick)) {
+        Box(Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF1A1A1C))) {
+            cover?.let {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current).data(it).crossfade(true).build(),
+                    contentDescription = title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Text(title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+        Text(subtitle, fontSize = 11.sp, color = Color.Gray)
+    }
+}
+
+@Composable
+private fun CollectionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String? = null, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = Color(0xFF9A9AA2), modifier = Modifier.padding(end = 16.dp))
+        Column {
+            Text(title, fontSize = 15.sp)
+            subtitle?.let { Text(it, fontSize = 12.sp, color = Color.Gray) }
+        }
+    }
+}
+
+/** "Uploaded 2 September 2026": the same wording the web client's Recently uploaded view uses. */
+internal fun uploadDayLabel(epoch: Double?): String {
+    if (epoch == null || epoch <= 0) return "Upload date unknown"
+    val fmt = java.text.DateFormat.getDateInstance(java.text.DateFormat.LONG)
+    return "Uploaded " + fmt.format(java.util.Date((epoch * 1000).toLong()))
 }
 
 internal fun monthLabel(epoch: Double?): String {
@@ -434,6 +809,7 @@ internal fun Gallery(
     serverUrl: String,
     onItemClick: (MediaItem) -> Unit,
     onLoadMore: () -> Unit,
+    uploadsFeed: Boolean = false,
 ) {
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState, items.size) {
@@ -443,11 +819,14 @@ internal fun Gallery(
             .collect { onLoadMore() }
     }
     // Pre-compute section boundaries so we can insert full-width headers.
-    val sectioned = remember(items) {
+    // The Uploads feed is ordered by upload time, so it sections by upload
+    // day; sectioning it by capture month would fragment into one header per
+    // run of items.
+    val sectioned = remember(items, uploadsFeed) {
         val out = mutableListOf<Pair<String?, MediaItem>>()
         var lastLabel: String? = null
         for (m in items) {
-            val lbl = monthLabel(m.takenAt)
+            val lbl = if (uploadsFeed) uploadDayLabel(m.addedAt) else monthLabel(m.takenAt)
             if (lbl != lastLabel) {
                 out += lbl to m  // first item of new section also carries the label
                 lastLabel = lbl
@@ -532,7 +911,7 @@ private fun MemoriesRow(
                     ) {
                         AsyncImage(
                             model = ImageRequest.Builder(LocalContext.current)
-                                .data(Urls.thumb(serverUrl, item0.id))
+                                .data(Urls.thumb(serverUrl, item0.id, item0.editVersion))
                                 .crossfade(true)
                                 .build(),
                             contentDescription = null,
@@ -569,7 +948,7 @@ private fun Tile(item: MediaItem, serverUrl: String, onClick: () -> Unit) {
     ) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(Urls.thumb(serverUrl, item.id))
+                .data(Urls.thumb(serverUrl, item.id, item.editVersion))
                 .crossfade(true)
                 .build(),
             contentDescription = item.name,
@@ -620,70 +999,4 @@ private fun ErrorView(error: String, serverUrl: String, onRetry: () -> Unit, onS
             TextButton(onClick = onRetry) { Text("Retry") }
         }
     }
-}
-
-@Composable
-private fun SettingsDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var text by remember { mutableStateOf(current) }
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val settings = remember { com.buildapp.photos.data.SettingsRepository(context) }
-    val backupOn by settings.backupEnabled.collectAsState(initial = false)
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        if (grants.values.any { it }) {
-            scope.launch {
-                settings.setBackupEnabled(true)
-                com.buildapp.photos.data.BackupWorker.schedule(context)
-                android.widget.Toast.makeText(context, "Auto backup on — new photos upload on Wi-Fi", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            android.widget.Toast.makeText(context, "Photos permission needed for backup", android.widget.Toast.LENGTH_SHORT).show()
-        }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("http://host:port") },
-                )
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Auto backup", style = MaterialTheme.typography.bodyLarge)
-                        Text("Upload camera photos & videos over Wi-Fi",
-                            style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A9AA2))
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = backupOn,
-                        onCheckedChange = { want ->
-                            if (want) {
-                                val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
-                                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES,
-                                            android.Manifest.permission.READ_MEDIA_VIDEO)
-                                else arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                permLauncher.launch(perms)
-                            } else {
-                                scope.launch {
-                                    settings.setBackupEnabled(false)
-                                    com.buildapp.photos.data.BackupWorker.cancel(context)
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSave(text.trim()) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }

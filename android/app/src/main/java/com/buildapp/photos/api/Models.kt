@@ -23,6 +23,17 @@ data class MediaItem(
     val place: String? = null,
     @SerialName("camera_make") val cameraMake: String? = null,
     @SerialName("camera_model") val cameraModel: String? = null,
+    /** Bumped by the server on edit/rotate; goes into the thumb URL as ?v= for cache-busting. */
+    @SerialName("edit_version") val editVersion: Int = 0,
+    /** When the item entered the library (upload time), epoch seconds. */
+    @SerialName("added_at") val addedAt: Double? = null,
+    /** Which phone and folder a backup upload came from (detail endpoint). */
+    @SerialName("source_device") val sourceDevice: String? = null,
+    @SerialName("source_folder") val sourceFolder: String? = null,
+    /** Detail endpoint only: preformatted exposure settings (iso, aperture, shutter, focal_length, lens, exposure_bias, flash). */
+    val exposure: Map<String, String>? = null,
+    /** Detail endpoint only, videos: duration, codec, frame_rate, bitrate. */
+    val video: Map<String, String>? = null,
 )
 
 @Serializable
@@ -56,6 +67,61 @@ data class LocationItem(
     val album: String? = null,
 )
 
+/** A manual album: a named set of media ids, independent of folders. */
+@Serializable
+data class UserAlbum(
+    val id: Int,
+    val name: String,
+    val count: Int = 0,
+    val cover: String? = null,
+    @SerialName("share_token") val shareToken: String? = null,
+    /** Only when listed with ?media_id=: whether that item is in the album. */
+    val contains: Boolean? = null,
+    /** In the owner's Locked folder (visible only to them, while unlocked). */
+    val locked: Boolean = false,
+)
+
+@Serializable
+data class UserAlbumResp(val ok: Boolean, val album: UserAlbum, val added: Int = 0, val removed: Int = 0)
+
+@Serializable
+data class AlbumShareResp(val ok: Boolean, val token: String, val url: String)
+
+@Serializable
+data class OkResp(val ok: Boolean)
+
+// Accounts
+@Serializable
+data class User(val id: Int, val name: String, val role: String)
+
+@Serializable
+data class AuthState(
+    @SerialName("auth_required") val authRequired: Boolean,
+    val user: User? = null,
+    val unlocked: Boolean = false,
+)
+
+@Serializable
+data class LoginBody(val name: String, val password: String, val device: String = "android")
+
+@Serializable
+data class LoginResp(val ok: Boolean, val token: String, val user: User)
+
+@Serializable
+data class NewUserBody(val name: String, val password: String, val role: String = "member")
+
+@Serializable
+data class PasswordBody(val password: String)
+
+@Serializable
+data class LockResp(val ok: Boolean, val locked: Int = 0, val unlocked: Int = 0)
+
+@Serializable
+data class IdsBody(val ids: List<String>)
+
+@Serializable
+data class NewAlbumBody(val name: String, @SerialName("media_ids") val mediaIds: List<String> = emptyList())
+
 @Serializable
 data class ShareResp(
     val ok: Boolean,
@@ -81,7 +147,14 @@ data class MediaPage(
 data class Album(
     val album: String,
     val count: Int,
-)
+    /** Phone folder inside the uploads album (Camera, WhatsApp Images...), from the backup app. */
+    val folder: String? = null,
+    val device: String? = null,
+    val cover: String? = null,
+) {
+    val label: String get() = folder ?: album
+    val key: String get() = if (folder != null) "$album/$folder" else album
+}
 
 @Serializable
 data class Cluster(
