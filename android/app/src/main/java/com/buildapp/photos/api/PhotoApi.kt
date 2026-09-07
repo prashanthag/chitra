@@ -50,6 +50,10 @@ interface PhotoApi {
     @POST("api/user_albums/{id}/lock")
     suspend fun lockUserAlbum(@Path("id") id: Int): OkResp
 
+    /** Lock every item of a folder album (library folder or phone folder). */
+    @POST("api/albums/lock")
+    suspend fun lockFolderAlbum(@retrofit2.http.Body body: FolderLockBody): LockResp
+
     @POST("api/user_albums/{id}/unlock")
     suspend fun unlockUserAlbum(@Path("id") id: Int): OkResp
 

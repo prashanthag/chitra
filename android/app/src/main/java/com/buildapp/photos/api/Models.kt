@@ -117,6 +117,9 @@ data class PasswordBody(val password: String)
 data class LockResp(val ok: Boolean, val locked: Int = 0, val unlocked: Int = 0)
 
 @Serializable
+data class FolderLockBody(val album: String, val folder: String? = null)
+
+@Serializable
 data class IdsBody(val ids: List<String>)
 
 @Serializable

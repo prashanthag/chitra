@@ -54,6 +54,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.unit.sp
 import com.buildapp.photos.api.Album
+import com.buildapp.photos.api.FolderLockBody
 import com.buildapp.photos.api.MediaItem
 import com.buildapp.photos.api.NewAlbumBody
 import com.buildapp.photos.api.PhotoApi
@@ -254,7 +255,12 @@ fun UserAlbumScreen(
                                 if (album.locked) api.unlockUserAlbum(album.id) else api.lockUserAlbum(album.id)
                                 onDeleted()   // leave the screen: the album has moved in or out of the Locked folder
                             } catch (e: Exception) {
-                                android.widget.Toast.makeText(context, if (album.locked) "Unlock the Locked folder first" else "Sign in to lock", android.widget.Toast.LENGTH_SHORT).show()
+                                val code = (e as? retrofit2.HttpException)?.code()
+                                android.widget.Toast.makeText(context, when {
+                                    code == 401 && album.locked -> "Open the Locked folder first (Collections > Locked folder)"
+                                    code == 401 -> "Sign in to lock"
+                                    else -> "Could not ${if (album.locked) "unlock" else "lock"}: ${e.message}"
+                                }, android.widget.Toast.LENGTH_LONG).show()
                             }
                         }
                     }) { Icon(if (album.locked) Icons.Default.LockOpen else Icons.Default.Lock, contentDescription = if (album.locked) "Unlock album" else "Lock album") }
@@ -331,8 +337,32 @@ fun AlbumMediaScreen(
     album: Album,
     onBack: () -> Unit,
     onItemClick: (List<MediaItem>, Int) -> Unit,
+    signedIn: Boolean = false,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var confirmLock by remember { mutableStateOf(false) }
+    if (confirmLock) {
+        AlertDialog(
+            onDismissRequest = { confirmLock = false },
+            title = { Text("Lock this folder?") },
+            text = { Text("Every photo and video in it moves to your Locked folder: hidden from all views and all other accounts until you unlock them.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        val r = runCatching { api.lockFolderAlbum(FolderLockBody(album.album, album.folder)) }
+                        android.widget.Toast.makeText(context,
+                            r.map { "Locked ${it.locked} items" }.getOrElse { "Could not lock: ${it.message}" },
+                            android.widget.Toast.LENGTH_SHORT).show()
+                        confirmLock = false
+                        if (r.isSuccess) onBack()
+                    }
+                }) { Text("Lock") }
+            },
+            dismissButton = { TextButton(onClick = { confirmLock = false }) { Text("Cancel") } },
+        )
+    }
     var items by remember(album.key) { mutableStateOf<List<MediaItem>>(emptyList()) }
     var page by remember(album.key) { mutableStateOf(0) }
     var loading by remember(album.key) { mutableStateOf(false) }
@@ -357,6 +387,11 @@ fun AlbumMediaScreen(
                 title = { Text("${album.label} · ${album.count}") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) }
+                },
+                actions = {
+                    if (signedIn) IconButton(onClick = { confirmLock = true }) {
+                        Icon(Icons.Default.Lock, contentDescription = "Lock folder")
+                    }
                 },
             )
         },

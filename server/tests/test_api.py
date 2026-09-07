@@ -273,6 +273,13 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/unlock").status_code, 200)
         self.assertIn("two.jpg", self._names(self.member, undated=1))
 
+        # Locking a folder album locks its members.
+        r = self.admin.post("/api/albums/lock", json={"album": "uploads"})
+        self.assertGreaterEqual(r.get_json()["locked"], 1)
+        self.assertEqual(self._names(self.member, album="uploads"), [])
+        self.assertIn("up.jpg", self._names(self.admin, locked=1))
+        self.admin.post("/api/media/unlock", json={"ids": [id_of("up.jpg")]})
+
         # Deleting an account releases its locked items and ends its sessions.
         kid = [u for u in self.admin.get("/api/users").get_json() if u["name"] == "kid"][0]["id"]
         self.member.post("/api/media/lock", json={"ids": [two]})

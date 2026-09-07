@@ -1249,6 +1249,32 @@ def unlock_media():
     return jsonify({"ok": True, "unlocked": cur.rowcount})
 
 
+@app.post("/api/albums/lock")
+def lock_folder_album():
+    """Lock every item of a folder album (a library folder, or a phone folder
+    with {"album": "uploads", "folder": ...}) into my Locked folder. Folder
+    albums are derived from paths, so this locks their members."""
+    u = current_user()
+    if not u:
+        abort(401)
+    body = request.get_json(silent=True) or {}
+    album, folder = str(body.get("album") or ""), body.get("folder")
+    if not album:
+        abort(400, "album required")
+    if album == "uploads":
+        where, args = "uploaded = 1", []
+    else:
+        where, args = "album = ?", [album]
+    if folder:
+        where += " AND source_folder = ?"
+        args.append(str(folder))
+    cur = db().execute(
+        f"UPDATE media SET private_to = ?, share_token = NULL WHERE {where} AND private_to IS NULL AND trashed_at IS NULL",
+        [u["id"], *args])
+    db().commit()
+    return jsonify({"ok": True, "locked": cur.rowcount})
+
+
 @app.post("/api/user_albums/<int:aid>/lock")
 def lock_album(aid: int):
     u = current_user()
@@ -1294,7 +1320,8 @@ def _readonly_guard():
         # Face/person labels and manual albums describe the library rather
         # than the files in it: neither writes a byte to any media.
         or request.path.startswith(("/api/persons", "/api/user_albums", "/api/users", "/api/login",
-                                    "/api/logout", "/api/locked", "/api/media/lock", "/api/media/unlock"))
+                                    "/api/logout", "/api/locked", "/api/media/lock", "/api/media/unlock",
+                                    "/api/albums/lock"))
     )
     if not allowed:
         return jsonify({"ok": False, "error": "read-only library"}), 403
@@ -1395,7 +1422,8 @@ def list_media():
     args: list = []
     # ?locked=1 lists my Locked folder (session must be unlocked); every
     # other listing leaves locked items out.
-    if request.args.get("locked") in ("1", "true"):
+    locked_view = request.args.get("locked") in ("1", "true")
+    if locked_view:
         u = current_user()
         if not u or not session_unlocked():
             abort(401, "unlock the Locked folder first")
@@ -1424,9 +1452,10 @@ def list_media():
     elif album:
         where.append("m.album = ?")
         args.append(album)
-    elif not (trashed_only or camera or favorites_only or year or folder):
+    elif not (trashed_only or camera or favorites_only or year or folder or locked_view):
         # Phone-backup uploads stay out of the plain browse feeds; explicit
-        # camera/favorites/album/year filters see them (search does not).
+        # camera/favorites/album/year filters see them (search does not), and
+        # the Locked folder shows everything its owner locked.
         where.append("m.album != 'uploads'")
     if camera:
         # Match by model when set, else by make (the friendly label can be either).

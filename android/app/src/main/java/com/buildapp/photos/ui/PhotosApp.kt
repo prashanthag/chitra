@@ -255,6 +255,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 album = r.album,
                 onBack = { route = Route.Albums },
                 onItemClick = { l, i -> staticViewer = l to i },
+                signedIn = state.user != null,
             )
             staticViewer?.let { (list, idx) ->
                 ViewerDialog(
