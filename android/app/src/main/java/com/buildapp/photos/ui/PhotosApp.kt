@@ -138,7 +138,15 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
     var albumsChanged by remember { mutableStateOf(0) }
     albumPickFor?.let { item ->
         AddToAlbumDialog(serverUrl = state.serverUrl, item = item,
+            fromAlbum = (route as? Route.UserAlbumMedia)?.album,
             onDismiss = { albumPickFor = null }, onChanged = { albumsChanged++ })
+    }
+    // "Move to folder" from any viewer: one chooser of the folder albums.
+    var moveFor by remember { mutableStateOf<MediaItem?>(null) }
+    moveFor?.let { item ->
+        MoveToFolderDialog(serverUrl = state.serverUrl, item = item,
+            onDismiss = { moveFor = null },
+            onMoved = { vm.dropItem(item.id); albumsChanged++; staticViewer = null; liveViewerIndex = null; moveFor = null })
     }
     // Accounts: a 401 anywhere asks to sign in; the Locked folder asks for
     // the password again. Both come from the view model's flags.
@@ -212,6 +220,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
+                    onAddToAlbum = { albumPickFor = it },
+                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onMove = { moveFor = it },
                 )
             }
             return
@@ -245,6 +256,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
                     onAddToAlbum = { albumPickFor = it },
+                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onMove = { moveFor = it },
                 )
             }
             return
@@ -268,6 +281,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
                     onAddToAlbum = { albumPickFor = it },
+                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onMove = { moveFor = it },
                 )
             }
             return
@@ -339,6 +354,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onAddToAlbum = { albumPickFor = it },
                     onLock = if (state.user != null) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
                     lockedView = r.filter == Filter.LOCKED,
+                    onMove = if (r.filter != Filter.LOCKED) { m -> moveFor = m } else null,
                 )
             }
             return
@@ -477,6 +493,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
             onAddToAlbum = { albumPickFor = it },
             onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true) } else null,
+            onMove = { moveFor = it },
         )
     }
     staticViewer?.let { (list, idx) ->
@@ -536,14 +553,68 @@ private fun UnlockDialog(vm: GalleryViewModel, onDismiss: () -> Unit, onUnlocked
     )
 }
 
+/** Chooser of folder albums (library folders); the file moves on disk, keeping its id. */
+@Composable
+private fun MoveToFolderDialog(serverUrl: String, item: MediaItem, onDismiss: () -> Unit, onMoved: () -> Unit) {
+    val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var folders by remember { mutableStateOf<List<Album>?>(null) }
+    var newName by remember { mutableStateOf("") }
+    LaunchedEffect(serverUrl) {
+        folders = runCatching { api.albums() }.getOrDefault(emptyList()).filter { it.folder == null && it.album != "uploads" && it.album != "_root" && it.album != item.album }
+    }
+    fun move(target: String) {
+        scope.launch {
+            val r = runCatching { api.moveMedia(com.buildapp.photos.api.MoveBody(listOf(item.id), target)) }
+            android.widget.Toast.makeText(context,
+                r.map { if (it.moved > 0) "Moved to ${it.album}" else "Not moved" }.getOrElse { "Could not move: ${it.message}" },
+                android.widget.Toast.LENGTH_SHORT).show()
+            if (r.isSuccess && r.getOrThrow().moved > 0) onMoved() else onDismiss()
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move to folder") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Currently in “${item.album ?: "?"}”. The file moves into the folder's year/month; favorites, albums and people stay.", color = Color.Gray, fontSize = 12.sp)
+                val list = folders
+                when {
+                    list == null -> CircularProgressIndicator()
+                    else -> list.forEach { a ->
+                        Row(Modifier.fillMaxWidth().clickable { move(a.album) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(a.album, modifier = Modifier.weight(1f))
+                            Text("${a.count}", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                }
+                Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = newName, onValueChange = { newName = it }, singleLine = true,
+                        label = { Text("New folder") }, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { val n = newName.trim(); if (n.isNotEmpty()) move(n) }) { Text("Move") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 /** Picker listing every manual album with a check for the ones this item is in; tap toggles. */
 @Composable
-private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -> Unit, onChanged: () -> Unit) {
+private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -> Unit, onChanged: () -> Unit, fromAlbum: UserAlbum? = null) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     val scope = rememberCoroutineScope()
     var albums by remember { mutableStateOf<List<UserAlbum>?>(null) }
     var newName by remember { mutableStateOf("") }
     var tick by remember { mutableStateOf(0) }
+    // Opened from inside an album: move (remove from it) rather than copy.
+    var moveOut by remember { mutableStateOf(fromAlbum != null) }
+    suspend fun leaveSource(targetId: Int) {
+        if (moveOut && fromAlbum != null && fromAlbum.id != targetId) {
+            runCatching { api.removeFromUserAlbum(fromAlbum.id, IdsBody(listOf(item.id))) }
+        }
+    }
     LaunchedEffect(item.id, tick) {
         albums = try { api.userAlbums(mediaId = item.id) } catch (_: Exception) { emptyList() }
     }
@@ -562,8 +633,9 @@ private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -
                                 scope.launch {
                                     try {
                                         if (a.contains == true) api.removeFromUserAlbum(a.id, IdsBody(listOf(item.id)))
-                                        else api.addToUserAlbum(a.id, IdsBody(listOf(item.id)))
+                                        else { api.addToUserAlbum(a.id, IdsBody(listOf(item.id))); leaveSource(a.id) }
                                         onChanged(); tick++
+                                        if (moveOut && fromAlbum != null && a.contains != true && a.id != fromAlbum.id) onDismiss()
                                     } catch (_: Exception) {}
                                 }
                             }.padding(vertical = 10.dp),
@@ -575,6 +647,10 @@ private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -
                         }
                     }
                 }
+                if (fromAlbum != null) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(checked = moveOut, onCheckedChange = { moveOut = it })
+                    Text("Move: remove from “${fromAlbum.name}”", fontSize = 13.sp)
+                }
                 Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = newName, onValueChange = { newName = it }, singleLine = true,
@@ -584,8 +660,10 @@ private fun AddToAlbumDialog(serverUrl: String, item: MediaItem, onDismiss: () -
                         val n = newName.trim(); if (n.isEmpty()) return@TextButton
                         scope.launch {
                             try {
-                                api.createUserAlbum(NewAlbumBody(n, listOf(item.id)))
+                                val created = api.createUserAlbum(NewAlbumBody(n, listOf(item.id))).album
+                                leaveSource(created.id)
                                 newName = ""; onChanged(); tick++
+                                if (moveOut && fromAlbum != null) onDismiss()
                             } catch (_: Exception) {}
                         }
                     }) { Text("Create") }

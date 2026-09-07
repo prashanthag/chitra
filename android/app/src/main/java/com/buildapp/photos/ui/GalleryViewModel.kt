@@ -363,6 +363,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearAuthPrompts() { _state.update { it.copy(needLogin = false, needUnlock = false) } }
 
+    /** An item left this list for another folder / album / the Locked folder. */
+    fun dropItem(id: String) { _state.update { s -> s.copy(items = s.items.filterNot { it.id == id }) } }
+
     /** Move an item into (or out of) my Locked folder; it leaves the current list either way. */
     fun setLocked(item: MediaItem, locked: Boolean) {
         val api = api ?: return

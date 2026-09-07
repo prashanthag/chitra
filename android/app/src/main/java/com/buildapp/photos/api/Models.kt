@@ -120,6 +120,12 @@ data class LockResp(val ok: Boolean, val locked: Int = 0, val unlocked: Int = 0)
 data class FolderLockBody(val album: String, val folder: String? = null)
 
 @Serializable
+data class MoveBody(val ids: List<String>, val album: String)
+
+@Serializable
+data class MoveResp(val ok: Boolean, val moved: Int = 0, val skipped: Int = 0, val album: String = "")
+
+@Serializable
 data class IdsBody(val ids: List<String>)
 
 @Serializable

@@ -50,6 +50,10 @@ interface PhotoApi {
     @POST("api/user_albums/{id}/lock")
     suspend fun lockUserAlbum(@Path("id") id: Int): OkResp
 
+    /** Move items into another folder album (files move on disk, ids stay). */
+    @POST("api/media/move")
+    suspend fun moveMedia(@retrofit2.http.Body body: MoveBody): MoveResp
+
     /** Lock every item of a folder album (library folder or phone folder). */
     @POST("api/albums/lock")
     suspend fun lockFolderAlbum(@retrofit2.http.Body body: FolderLockBody): LockResp

@@ -1314,7 +1314,7 @@ def _readonly_guard():
         return None
     allowed = (
         request.path in ("/api/rescan", "/api/upload", "/api/upload/check",
-                         "/api/uploads/organize",
+                         "/api/uploads/organize", "/api/media/move",
                          "/api/media/batch_trash", "/api/media/batch_restore")
         or request.path.endswith(("/favorite", "/trash", "/restore", "/name", "/merge"))
         # Face/person labels and manual albums describe the library rather
@@ -2001,6 +2001,47 @@ def organize_uploads() -> None:
         conn.close()
         _organize_state["running"] = False
     print(f"[organize] done: moved {_organize_state['moved']}, skipped {_organize_state['skipped']}")
+
+
+@app.post("/api/media/move")
+def move_media():
+    """Move items into another folder album: the files go to
+    "<album>/<YYYY>/<MM-Mon>/" (by capture date, like the rest of the
+    library), ids stay the same, so favorites, albums, faces and cached
+    thumbs follow. A new album name creates the folder."""
+    ids = _batch_ids()
+    target = _clean_dirname((request.get_json(silent=True) or {}).get("album"))
+    if not target or target.lower() in ("uploads", "_root") or target.startswith("."):
+        abort(400, "album must be a library folder name")
+    u = current_user()
+    moved, skipped = 0, 0
+    with _scan_lock:
+        for mid in ids:
+            r = db().execute("SELECT id, path, taken_at, mtime, private_to FROM media WHERE id = ?", (mid,)).fetchone()
+            if not r or (r["private_to"] is not None and not (u and r["private_to"] == u["id"])):
+                skipped += 1
+                continue
+            src = Path(r["path"])
+            if not src.exists():
+                skipped += 1
+                continue
+            t = time.localtime(r["taken_at"] or r["mtime"] or time.time())
+            dest_dir = MEDIA_ROOT / target / str(t.tm_year) / time.strftime("%m-%b", t)
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = _free_dest(dest_dir, src.name)
+                if dest.parent == src.parent:
+                    skipped += 1
+                    continue
+                src.rename(dest)
+            except OSError as e:
+                print(f"[move] could not move {src}: {e}")
+                skipped += 1
+                continue
+            db().execute("UPDATE media SET path = ?, album = ? WHERE id = ?", (str(dest), target, mid))
+            moved += 1
+        db().commit()
+    return jsonify({"ok": True, "moved": moved, "skipped": skipped, "album": target})
 
 
 @app.post("/api/uploads/organize")

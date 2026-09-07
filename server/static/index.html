@@ -219,6 +219,7 @@
       <button class="btn" onclick="selectAll()">Select all</button>
       <button class="btn" id="selAlbum" onclick="openAlbumPicker([...state.sel])">＋ Album</button>
       <button class="btn" id="selRemove" onclick="removeSelFromAlbum()">− Remove from album</button>
+      <button class="btn" id="selMove" onclick="moveSel()">⇢ Move to folder</button>
       <button class="btn" id="selLock" onclick="lockSel(true)">🔒 Lock</button>
       <button class="btn" id="selUnlock" onclick="lockSel(false)">🔓 Unlock</button>
       <span style="margin-left:auto"></span>
@@ -244,6 +245,7 @@
     <button class="iconbtn" id="vShare" title="Share" onclick="shareCurrent()">⤴</button>
     <button class="iconbtn" id="vAlbum" title="Add to album" onclick="openAlbumPicker([curItem().id])">⊞</button>
     <button class="iconbtn" id="vLock" title="Move to Locked folder" onclick="lockCurrent()">🔒</button>
+    <button class="iconbtn" id="vMove" title="Move to another folder" onclick="moveItems([curItem().id])">⇢</button>
     <button class="iconbtn" id="vInfo" title="Info" onclick="toggleInfo()">ⓘ</button>
     <button class="iconbtn" id="vFav" title="Favorite" onclick="toggleFav()">★</button>
     <button class="iconbtn" id="vTag" title="Tag people" onclick="toggleTagPop()">＠</button>
@@ -284,6 +286,7 @@
 <div id="albumpop">
   <h4>Add to album <span class="x" onclick="closeAlbumPicker()">✕</span></h4>
   <div class="plist" id="albumList"></div>
+  <label id="moveRow" style="display:none;font-size:12px;color:var(--dim);margin-bottom:8px"><input type="checkbox" id="moveOut" checked /> Move: remove from the current album</label>
   <div class="newrow">
     <input id="newAlbum" placeholder="New album name" onkeydown="if(event.key==='Enter')createAlbumFromPicker()" />
     <button class="btn accent" onclick="createAlbumFromPicker()">Create</button>
@@ -540,6 +543,7 @@ function updateSelBar(){
   $('#selAlbum').style.display = inTrash? 'none':'';
   $('#selRemove').style.display = state.view==='ualbum'? '':'none';
   const locked = state.view==='locked';
+  $('#selMove').style.display = (inTrash || locked)? 'none':'';
   $('#selLock').style.display = (inTrash || locked || !AUTH.user)? 'none':'';
   $('#selUnlock').style.display = locked? '':'none';
   $('#selTrash').style.display = inTrash? 'none':'';
@@ -754,6 +758,8 @@ function closeAlbumPicker(){ $('#albumpop').classList.remove('on'); }
 async function renderAlbumPicker(){
   // With one item the list shows membership and toggles; with many it adds.
   const single = pickerIds.length===1;
+  // Opened from inside a manual album: offer to move rather than copy.
+  $('#moveRow').style.display = state.view==='ualbum'? '' : 'none';
   let albums=[]; try{ albums = await getJSON('/api/user_albums'+(single? '?media_id='+encodeURIComponent(pickerIds[0]) : '')); }catch(e){}
   $('#albumpop h4').firstChild.textContent = single? 'Add to album ' : `Add ${pickerIds.length} items to album `;
   $('#albumList').innerHTML = albums.map(a=>`
@@ -773,16 +779,36 @@ async function toggleAlbumMembership(aid, el){
   }
   const r = await getJSON(`/api/user_albums/${aid}/items`, idsPost(pickerIds));
   el.querySelector('.chk').textContent='✓';
-  toast(r.added? `Added ${r.added} to album` : 'Already in album');
-  if(!single){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+  const moved = await moveOutOfCurrentAlbum(aid);
+  toast(moved? `Moved ${pickerIds.length} to album` : (r.added? `Added ${r.added} to album` : 'Already in album'));
+  if(!single || moved){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
 }
+// "Move" from a manual album = add to the target, then remove from this one.
+async function moveOutOfCurrentAlbum(targetId){
+  if(state.view!=='ualbum' || !$('#moveOut').checked || String(targetId)===String(state.params.id)) return false;
+  await getJSON(`/api/user_albums/${state.params.id}/items`, {...idsPost(pickerIds), method:'DELETE'});
+  closeViewer(); state.items=[]; loadUserAlbum(state.params.id);
+  return true;
+}
+// Move files into another folder album (the files really move on disk).
+async function moveItems(ids){
+  ids = (ids||[]).filter(Boolean); if(!ids.length) return;
+  let albums=[]; try{ albums = (await getJSON('/api/albums')).filter(a=>!a.folder && a.album!=='uploads' && a.album!=='_root').map(a=>a.album); }catch(e){}
+  const name = prompt(`Move ${ids.length} item(s) to folder (a new name creates the folder):\n\n${albums.join('\n')}`, state.params.album && state.params.album!=='uploads'? '' : (albums[0]||''));
+  if(name===null) return; const clean=name.trim(); if(!clean) return;
+  const r = await getJSON('/api/media/move', {...idsPost(ids), body: JSON.stringify({ids, album: clean})});
+  toast(`Moved ${r.moved} to “${r.album}”` + (r.skipped? ` (${r.skipped} skipped)` : ''));
+  closeViewer(); state.sel.clear(); updateSelBar(); reloadView();
+}
+async function moveSel(){ return moveItems([...state.sel]); }
 async function createAlbumFromPicker(){
   const inp = $('#newAlbum'); const name = inp.value.trim(); if(!name) return;
   const r = await getJSON('/api/user_albums', {method:'POST', headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name, media_ids: pickerIds})});
   inp.value='';
   toast(`Created “${r.album.name}” with ${r.album.count}`);
-  if(pickerIds.length>1){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
+  const moved = await moveOutOfCurrentAlbum(r.album.id);
+  if(pickerIds.length>1 || moved){ closeAlbumPicker(); state.sel.clear(); markTiles(); updateSelBar(); }
   else renderAlbumPicker();
 }
 

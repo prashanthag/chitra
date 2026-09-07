@@ -16,6 +16,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddToPhotos
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Archive
@@ -72,6 +73,8 @@ fun ViewerDialog(
     /** Lock (or, in the Locked folder, unlock) the item; null hides the button. */
     onLock: ((MediaItem) -> Unit)? = null,
     lockedView: Boolean = false,
+    /** Move the item into another folder album (files move on disk). */
+    onMove: ((MediaItem) -> Unit)? = null,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -124,6 +127,11 @@ fun ViewerDialog(
                 if (onAddToAlbum != null && item.trashedAt == null) {
                     IconButton(onClick = { onAddToAlbum(item) }) {
                         Icon(Icons.Default.AddToPhotos, contentDescription = "Add to album", tint = Color.White)
+                    }
+                }
+                if (onMove != null && item.trashedAt == null) {
+                    IconButton(onClick = { onMove(item) }) {
+                        Icon(Icons.Default.DriveFileMove, contentDescription = "Move to folder", tint = Color.White)
                     }
                 }
                 if (onLock != null && item.trashedAt == null) {

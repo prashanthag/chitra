@@ -351,6 +351,44 @@ class UploadSourceTests(unittest.TestCase):
         self.assertIsNone(d["source_folder"])
 
 
+class MoveTests(unittest.TestCase):
+    """Moving items between folder albums moves the files and keeps ids."""
+
+    def test_move_keeps_id_and_relations(self):
+        path = os.path.join(MEDIA, "CameraX", "movable.jpg")
+        exif = Image.Exif()
+        exif[306] = "2021:03:09 08:00:00"
+        Image.new("RGB", (40, 40), (4, 4, 4)).save(path, "JPEG", exif=exif.tobytes())
+        chitra.scan_once()
+        mid = id_of("movable.jpg")
+        client.post(f"/api/media/{mid}/favorite")
+        aid = client.post("/api/user_albums", json={"name": "Trip", "media_ids": [mid]}).get_json()["album"]["id"]
+
+        def cleanup():
+            row = chitra.sqlite3.connect(chitra.DB_PATH).execute("SELECT path FROM media WHERE id=?", (mid,)).fetchone()
+            if row and os.path.exists(row[0]):
+                os.remove(row[0])
+            client.delete(f"/api/user_albums/{aid}")
+            chitra.scan_once()
+        self.addCleanup(cleanup)
+
+        r = client.post("/api/media/move", json={"ids": [mid], "album": "Canon EOS 5D Mark IV"})
+        self.assertEqual(r.get_json()["moved"], 1)
+        d = client.get(f"/api/media/{mid}").get_json()
+        self.assertEqual(os.path.relpath(d["path"], MEDIA).split(os.sep), ["Canon EOS 5D Mark IV", "2021", "03-Mar", "movable.jpg"])
+        self.assertEqual(d["album"], "Canon EOS 5D Mark IV")
+        self.assertFalse(os.path.exists(path))
+        _, favs = totals(favorites=1)
+        self.assertIn("movable.jpg", favs)
+        self.assertEqual([i["id"] for i in client.get(f"/api/user_albums/{aid}/media").get_json()], [mid])
+        # A rescan sees the moved file as the same item.
+        chitra.scan_once()
+        self.assertEqual(id_of("movable.jpg"), mid)
+        # Not into uploads/, not twice into the same folder.
+        self.assertEqual(client.post("/api/media/move", json={"ids": [mid], "album": "uploads"}).status_code, 400)
+        self.assertEqual(client.post("/api/media/move", json={"ids": [mid], "album": "Canon EOS 5D Mark IV"}).get_json()["moved"], 0)
+
+
 class UploadFilingTests(unittest.TestCase):
     """Uploads with a known camera go into "<camera>/<YYYY>/<MM-Mon>/" like
     the rest of the library; unknown ones stay in uploads/."""
