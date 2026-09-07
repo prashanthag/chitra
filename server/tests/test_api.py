@@ -199,9 +199,27 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)                       # header session
         # Admin creates a member; members cannot manage users.
         self.assertEqual(self.admin.post("/api/users", json={"name": "kid", "password": "pass1", "role": "member"}).status_code, 200)
+        # A missing or unrecognised role must NOT grant admin. A client that drops the
+        # field (kotlinx omits values equal to their default) once escalated silently.
+        for body in ({"name": "nofield", "password": "pass1"},
+                     {"name": "typo", "password": "pass1", "role": "Member"},
+                     {"name": "junk", "password": "pass1", "role": "root"},
+                     {"name": "nulled", "password": "pass1", "role": None}):
+            r = self.admin.post("/api/users", json=body)
+            self.assertEqual(r.status_code, 200, body)
+            self.assertEqual(r.get_json()["user"]["role"], "member", body)
+        # Admin is still grantable, but only by asking for it exactly.
+        r = self.admin.post("/api/users", json={"name": "second", "password": "pass1", "role": "admin"})
+        self.assertEqual(r.get_json()["user"]["role"], "admin")
         self.assertEqual(self.member.post("/api/login", json={"name": "kid", "password": "pass1"}).status_code, 200)
         self.assertEqual(self.member.get("/api/users").status_code, 403)
-        self.assertEqual(len(self.admin.get("/api/users").get_json()), 2)
+        # A signed-in member still cannot create anyone, whatever role they ask for.
+        self.assertEqual(self.member.post("/api/users",
+                         json={"name": "sneak", "password": "pass1", "role": "admin"}).status_code, 403)
+        # prash, kid, nofield, typo, junk, nulled, second
+        everyone = self.admin.get("/api/users").get_json()
+        self.assertEqual(len(everyone), 7)
+        self.assertEqual(sorted(u["name"] for u in everyone if u["role"] == "admin"), ["prash", "second"])
 
         # A share link exists on one.jpg; locking must revoke it.
         share = self.admin.post(f"/api/media/{one}/share").get_json()["token"]

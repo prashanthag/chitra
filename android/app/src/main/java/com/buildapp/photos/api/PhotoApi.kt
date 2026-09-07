@@ -166,6 +166,10 @@ interface PhotoApi {
                 ignoreUnknownKeys = true
                 explicitNulls = false
                 coerceInputValues = true
+                // Without this, a property equal to its default is omitted from the
+                // body. NewUserBody(role = "member") sent nothing, and the server
+                // read the absent field as admin.
+                encodeDefaults = true
             }
             val logging = HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.BASIC

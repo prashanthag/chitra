@@ -1144,7 +1144,9 @@ def create_user():
     body = request.get_json(silent=True) or {}
     name = str(body.get("name") or "").strip()
     pw = str(body.get("password") or "")
-    role = "member" if body.get("role") == "member" else "admin"
+    # Fail closed: admin only when explicitly asked for. Anything else -- a missing
+    # field, a typo, a client that drops the value -- is a member.
+    role = "admin" if body.get("role") == "admin" else "member"
     bootstrap = not auth_required()
     if not bootstrap:
         _require_admin()
