@@ -287,6 +287,20 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual(self.admin.get("/api/media", query_string={"locked": 1}).status_code, 401)
         self.admin.post("/api/locked/unlock", json={"password": "secret1"})
 
+        # A trashed locked item stays out of everyone else's Trash - other
+        # admins included - and shows in the owner's only while unlocked.
+        other = chitra.app.test_client()
+        self.assertEqual(other.post("/api/login", json={"name": "second", "password": "pass1"}).status_code, 200)
+        self.assertEqual(self.admin.post(f"/api/media/{one}/trash").status_code, 200)
+        self.assertEqual(self._names(other, trashed=1), [])
+        self.assertEqual(self._names(self.member, trashed=1), [])
+        self.assertEqual(self._names(self.admin, trashed=1), ["one.jpg"])
+        self.admin.post("/api/locked/lock")
+        self.assertEqual(self._names(self.admin, trashed=1), [])
+        self.admin.post("/api/locked/unlock", json={"password": "secret1"})
+        self.assertEqual(self.admin.post(f"/api/media/{one}/restore").status_code, 200)
+        self.assertEqual(self._names(self.admin, locked=1), ["one.jpg"])
+
         # Re-lock the session, then unlock the item for real.
         self.admin.post("/api/locked/lock")
         self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)

@@ -1318,7 +1318,7 @@ def lock_folder_album():
         where += " AND source_folder = ?"
         args.append(str(folder))
     cur = db().execute(
-        f"UPDATE media SET private_to = ?, share_token = NULL WHERE {where} AND private_to IS NULL AND trashed_at IS NULL",
+        f"UPDATE media SET private_to = ?, share_token = NULL WHERE {where} AND private_to IS NULL",
         [u["id"], *args])
     db().commit()
     return jsonify({"ok": True, "locked": cur.rowcount})
@@ -1482,7 +1482,15 @@ def list_media():
         where.append("m.private_to = ?")
         args.append(u["id"])
     else:
-        where.append(visible_clause())
+        u = current_user()
+        if trashed_only and u and u["role"] == "admin" and session_unlocked():
+            # My Trash also shows my own locked items, but only while the
+            # Locked folder is open; nobody else - other admins included -
+            # ever sees them there.
+            where.append(f"({visible_clause()} OR m.private_to = ?)")
+            args.append(u["id"])
+        else:
+            where.append(visible_clause())
     if trashed_only:
         where.append("m.trashed_at IS NOT NULL")
     elif archived_only:
