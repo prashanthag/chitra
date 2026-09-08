@@ -2477,13 +2477,26 @@ def _album_member_clause(private_to) -> str:
 
 def _album_row(aid: int) -> dict | None:
     """The album, or None when it does not exist or is locked by someone
-    else (or by me while my session is locked)."""
+    else. The owner always gets their locked albums back (so they show as
+    a black tile with a lock); while the session is locked the cover is
+    withheld and `sealed` says the contents need the password."""
     r = db().execute("SELECT * FROM albums WHERE id = ?", (aid,)).fetchone()
-    if not r or not _can_see(r):
+    if not r:
+        return None
+    u = current_user()
+    mine_locked = r["private_to"] is not None and u is not None and r["private_to"] == u["id"]
+    if not _can_see(r) and not mine_locked:
         return None
     d = dict(r)
     vis = _album_member_clause(d.get("private_to"))
     d["locked"] = d.get("private_to") is not None
+    d["sealed"] = d["locked"] and not session_unlocked()
+    if d["sealed"]:
+        d["count"] = db().execute(
+            f"""SELECT COUNT(*) FROM album_media am JOIN media m ON m.id = am.media_id
+                WHERE am.album_id = ? AND m.trashed_at IS NULL AND {vis}""", (aid,)).fetchone()[0]
+        d["cover"] = None
+        return d
     d["count"] = db().execute(
         f"""SELECT COUNT(*) FROM album_media am JOIN media m ON m.id = am.media_id
             WHERE am.album_id = ? AND m.trashed_at IS NULL AND {vis}""", (aid,)).fetchone()[0]
@@ -2594,6 +2607,8 @@ def user_album_media(aid: int):
     a = _album_row(aid)
     if not a:
         abort(404)
+    if a.get("sealed"):
+        abort(401, "unlock the Locked folder first")
     rows = db().execute(
         f"""SELECT {_ALBUM_ITEM_COLS}
             FROM album_media am

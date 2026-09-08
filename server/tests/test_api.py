@@ -267,8 +267,16 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual([a["id"] for a in self.member.get("/api/user_albums").get_json()], [])
         self.assertEqual(self.member.get(f"/api/user_albums/{aid}/media").status_code, 404)
         self.assertNotIn("two.jpg", self._names(self.member, undated=1))
+        # The owner sees the locked album even with the session locked, but
+        # sealed: no cover, and its contents ask for the password (401).
+        self.admin.post("/api/locked/lock")
+        sealed = [a for a in self.admin.get("/api/user_albums").get_json() if a["id"] == aid][0]
+        self.assertEqual((sealed["locked"], sealed["sealed"], sealed["cover"], sealed["count"]), (True, True, None, 1))
+        self.assertEqual(self.admin.get(f"/api/user_albums/{aid}/media").status_code, 401)
+        self.admin.post("/api/locked/unlock", json={"password": "secret1"})
         mine = [a for a in self.admin.get("/api/user_albums").get_json() if a["id"] == aid]
-        self.assertEqual((mine[0]["locked"], mine[0]["count"]), (True, 1))
+        self.assertEqual((mine[0]["locked"], mine[0]["sealed"], mine[0]["count"]), (True, False, 1))
+        self.assertEqual(mine[0]["cover"], two)
         self.assertEqual([i["name"] for i in self.admin.get(f"/api/user_albums/{aid}/media").get_json()], ["two.jpg"])
         self.assertEqual(self.admin.post(f"/api/user_albums/{aid}/unlock").status_code, 200)
         self.assertIn("two.jpg", self._names(self.member, undated=1))

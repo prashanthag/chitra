@@ -79,6 +79,8 @@ data class UserAlbum(
     val contains: Boolean? = null,
     /** In the owner's Locked folder (visible only to them, while unlocked). */
     val locked: Boolean = false,
+    /** Locked and the session is not unlocked: no cover, contents need the password. */
+    val sealed: Boolean = false,
 )
 
 @Serializable

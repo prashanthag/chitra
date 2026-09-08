@@ -300,7 +300,8 @@ const $ = s => document.querySelector(s);
 const api = async (p, o) => {
   const r = await fetch(p, o);
   if(r.status===401 && !p.startsWith('/api/login')){
-    if(p.includes('locked=1') || p.startsWith('/api/media/unlock')) { await unlockPrompt(); }
+    // Signed in but refused: the Locked folder wants the password again.
+    if(AUTH.user || p.includes('locked=1') || p.startsWith('/api/media/unlock')) { await unlockPrompt(); }
     else showLogin();
   }
   return r;
@@ -665,11 +666,15 @@ async function loadAlbums(){
   // "My albums" are the manual ones (any photo, any folder); "Folders" are
   // the directories under the library root, read-only.
   const mineHtml = mine.map(a=>{
-    const cover = a.cover
+    // A locked album never shows its cover: a black tile with a lock, and
+    // opening it asks for the password.
+    const cover = a.locked
+      ? `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:30px;background:#000;color:#8a8a92">🔒</div>`
+      : a.cover
       ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
       : `<div class="sq" style="display:flex;align-items:center;justify-content:center;font-size:34px;color:#67676f">▤</div>`;
-    return `<div class="card" data-ualbum="${a.id}">
-      ${cover}<div class="nm">${esc(a.name)}</div><div class="ct">${a.count} items${a.share_token?' · shared':''}</div></div>`;
+    return `<div class="card" data-ualbum="${a.id}" data-locked="${a.locked?1:0}">
+      ${cover}<div class="nm">${esc(a.name)}</div><div class="ct">${a.locked? 'Locked · ' : ''}${a.count} items${a.share_token?' · shared':''}</div></div>`;
   }).join('');
   const coverOf = a => a.cover
       ? `<img class="sq" loading="lazy" src="/api/media/${a.cover}/thumb"/>`
@@ -691,7 +696,10 @@ async function loadAlbums(){
      <div class="sect">Folders</div>${foldersHtml}`;
   $('#newAlbumCard').addEventListener('click', createAlbumPrompt);
   $('#cards').querySelectorAll('[data-ualbum]').forEach(el=>
-    el.addEventListener('click', ()=> switchView('ualbum', {id: el.dataset.ualbum})));
+    el.addEventListener('click', async ()=>{
+      if(el.dataset.locked==='1' && !(await unlockPrompt())) return;   // password every time
+      switchView('ualbum', {id: el.dataset.ualbum});
+    }));
   $('#cards').querySelectorAll('[data-album]').forEach(el=>
     el.addEventListener('click', ()=> switchView('photos', el.dataset.folder? {album: el.dataset.album, folder: el.dataset.folder} : {album: el.dataset.album})));
   $('#status').textContent = (albums.length || mine.length)? '' : 'No albums.';
@@ -709,7 +717,10 @@ async function loadUserAlbum(id){
   state.done = true;   // static list, no paging
   let a, items=[];
   try{ [a, items] = await Promise.all([getJSON(`/api/user_albums/${id}`), getJSON(`/api/user_albums/${id}/media`)]); }
-  catch(e){ $('#status').textContent='Album not found.'; return; }
+  catch(e){
+    if(e.status===401 && AUTH.unlocked){ loadUserAlbum(id); return; }   // unlocked in the prompt: retry once
+    $('#status').textContent = e.status===401? 'Locked album — password required.' : 'Album not found.'; return;
+  }
   $('#crumb').style.display='flex';
   $('#crumb').innerHTML = `<span style="cursor:pointer" id="crumbBack">‹ Albums</span> · <b>${esc(a.name)}</b> · ${a.count} items
     <span class="acts">

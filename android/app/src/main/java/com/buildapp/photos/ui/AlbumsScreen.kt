@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -171,9 +172,14 @@ private fun NewAlbumDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
 private fun UserAlbumTile(album: UserAlbum, serverUrl: String, onClick: () -> Unit) {
     Column(modifier = Modifier.clickable(onClick = onClick)) {
         Box(
-            Modifier.aspectRatio(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF1A1A1C)),
+            Modifier.aspectRatio(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .background(if (album.locked) Color.Black else Color(0xFF1A1A1C)),
+            contentAlignment = Alignment.Center,
         ) {
-            album.cover?.let { id ->
+            // A locked album never shows its cover: black, with a lock.
+            if (album.locked) Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color(0xFF8A8A92),
+                modifier = Modifier.size(40.dp))
+            else album.cover?.let { id ->
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(Urls.thumb(serverUrl, id)).crossfade(true).build(),
                     contentDescription = album.name,
@@ -184,7 +190,7 @@ private fun UserAlbumTile(album: UserAlbum, serverUrl: String, onClick: () -> Un
         }
         Text(album.name, modifier = Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall)
         Text(
-            "${album.count} items" + (if (album.locked) " · locked" else if (album.shareToken != null) " · shared" else ""),
+            (if (album.locked) "Locked · " else "") + "${album.count} items" + (if (!album.locked && album.shareToken != null) " · shared" else ""),
             color = Color.Gray, style = MaterialTheme.typography.bodySmall,
         )
     }
@@ -206,9 +212,13 @@ fun UserAlbumScreen(
     val scope = rememberCoroutineScope()
     var items by remember(album.id) { mutableStateOf<List<MediaItem>?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var sealed by remember(album.id) { mutableStateOf(false) }
 
     LaunchedEffect(album.id, reloadKey) {
-        try { items = api.userAlbumMedia(album.id) } catch (_: Exception) { items = emptyList() }
+        try { items = api.userAlbumMedia(album.id); sealed = false } catch (e: Exception) {
+            sealed = (e as? retrofit2.HttpException)?.code() == 401
+            items = emptyList()
+        }
     }
     if (confirmDelete) {
         AlertDialog(
@@ -274,7 +284,8 @@ fun UserAlbumScreen(
             when {
                 list == null -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 list.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Text("Empty album. Open a photo and tap “Add to album”.", color = Color.Gray)
+                    Text(if (sealed) "Locked album. Go back and open it again to enter your password." else "Empty album. Open a photo and tap “Add to album”.",
+                        color = Color.Gray, modifier = Modifier.padding(24.dp))
                 }
                 else -> Gallery(
                     items = list,

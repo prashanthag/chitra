@@ -232,7 +232,8 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 serverUrl = state.serverUrl,
                 onBack = { route = Route.Gallery },
                 onAlbumSelected = { route = Route.AlbumMedia(it) },
-                onUserAlbumSelected = { route = Route.UserAlbumMedia(it) },
+                // A locked album asks for the password every time it is opened.
+                onUserAlbumSelected = { a -> if (a.locked) unlockThen = { route = Route.UserAlbumMedia(a) } else route = Route.UserAlbumMedia(a) },
             )
             return
         }
@@ -467,7 +468,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     serverUrl = state.serverUrl,
                     onAlbums = { route = Route.Albums },
                     onAlbum = { route = Route.AlbumMedia(it) },
-                    onUserAlbum = { route = Route.UserAlbumMedia(it) },
+                    onUserAlbum = { a -> if (a.locked) unlockThen = { route = Route.UserAlbumMedia(a) } else route = Route.UserAlbumMedia(a) },
                     onPeople = { route = Route.People },
                     onCluster = { route = Route.ClusterMedia(it) },
                     onMap = { route = Route.Map },
@@ -785,7 +786,8 @@ private fun CollectionsTab(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(userAlbums.take(6), key = { "u${it.id}" }) { a ->
-                CollectionCard(a.name, "${a.count}", a.cover?.let { Urls.thumb(serverUrl, it) }) { onUserAlbum(a) }
+                CollectionCard(a.name, if (a.locked) "Locked · ${a.count}" else "${a.count}",
+                    if (a.locked) null else a.cover?.let { Urls.thumb(serverUrl, it) }, locked = a.locked) { onUserAlbum(a) }
             }
             items(albums.take(8), key = { it.key }) { a ->
                 CollectionCard(a.label, "${a.count}", a.cover?.let { Urls.thumb(serverUrl, it) }) { onAlbum(a) }
@@ -836,9 +838,11 @@ private fun SectionHeader(title: String, onSeeAll: () -> Unit) {
 }
 
 @Composable
-private fun CollectionCard(title: String, subtitle: String, cover: String?, onClick: () -> Unit) {
+private fun CollectionCard(title: String, subtitle: String, cover: String?, locked: Boolean = false, onClick: () -> Unit) {
     Column(Modifier.width(120.dp).clickable(onClick = onClick)) {
-        Box(Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF1A1A1C))) {
+        Box(Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)).background(if (locked) Color.Black else Color(0xFF1A1A1C)),
+            contentAlignment = Alignment.Center) {
+            if (locked) Icon(Icons.Default.Lock, contentDescription = "Locked", tint = Color(0xFF8A8A92), modifier = Modifier.size(36.dp))
             cover?.let {
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(it).crossfade(true).build(),
