@@ -489,6 +489,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onMap = { route = Route.Map },
                     onCollection = { route = Route.Collection(it) },
                     signedIn = vm.isAdmin,
+                    canDelete = vm.canDelete,
                     onLocked = { unlockThen = { route = Route.Collection(Filter.LOCKED) } },
                 )
             }
@@ -816,6 +817,7 @@ private fun CollectionsTab(
     onCollection: (Filter) -> Unit,
     signedIn: Boolean = false,
     onLocked: () -> Unit = {},
+    canDelete: Boolean = true,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     var userAlbums by remember(serverUrl) { mutableStateOf<List<UserAlbum>>(emptyList()) }
@@ -866,7 +868,7 @@ private fun CollectionsTab(
         CollectionRow(Icons.Default.CloudUpload, "Recently uploaded", "What the phones sent, newest first") { onCollection(Filter.UPLOADS) }
         CollectionRow(Icons.Default.HelpOutline, "Unknown date") { onCollection(Filter.UNKNOWN) }
         CollectionRow(Icons.Default.Archive, "Archive") { onCollection(Filter.ARCHIVED) }
-        CollectionRow(Icons.Default.Delete, "Trash", "Kept 60 days") { onCollection(Filter.TRASH) }
+        if (canDelete) CollectionRow(Icons.Default.Delete, "Trash", "Kept 60 days") { onCollection(Filter.TRASH) }   // admin-only
         if (signedIn) CollectionRow(Icons.Default.Lock, "Locked folder", "Only you, after your password", onLocked)
         Spacer(Modifier.height(24.dp))
     }

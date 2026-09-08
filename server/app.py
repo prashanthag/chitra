@@ -1079,10 +1079,10 @@ def _member_blocked(p: str, method: str) -> bool:
         return True
     if method in ("GET", "HEAD", "OPTIONS"):
         return False
-    if p in ("/api/media/batch_trash", "/api/media/batch_delete", "/api/media/move",
-             "/api/uploads/organize", "/api/rescan"):
+    if p in ("/api/media/batch_trash", "/api/media/batch_delete", "/api/media/batch_restore",
+             "/api/media/move", "/api/uploads/organize", "/api/rescan"):
         return True
-    return p.endswith(("/trash", "/edit", "/rotate"))
+    return p.endswith(("/trash", "/restore", "/edit", "/rotate"))
 
 
 def _touches_locked(p: str) -> bool:
@@ -1138,7 +1138,8 @@ def auth_state():
         "user": dict(u) if u else None,
         "unlocked": session_unlocked(),
         "unlock_idle_seconds": UNLOCK_IDLE_SECONDS,
-        # Members add and organise but never delete or rewrite files.
+        # Members add and organise but never delete or rewrite files; the
+        # Trash is admin-only.
         "can_delete": u is None or u["role"] == "admin",
     })
 
@@ -1460,6 +1461,8 @@ def list_media():
 
     trashed_only = request.args.get("trashed") in ("1", "true")
     archived_only = request.args.get("archived") in ("1", "true")
+    if trashed_only and g.user is not None and g.user["role"] != "admin":
+        abort(403, "the Trash is admin-only")
 
     sort = request.args.get("sort", "taken")
 

@@ -327,6 +327,7 @@ async function refreshAuth(){
   // The Locked folder is an admin feature: members never see it.
   document.querySelector('[data-view="locked"]').style.display = isAdmin()? '' : 'none';
   document.body.classList.toggle('nodelete', !canDelete());
+  document.querySelector('[data-view="trash"]').style.display = canDelete()? '' : 'none';   // Trash is admin-only
 }
 function isAdmin(){ return !!(AUTH.user && AUTH.user.role==='admin'); }
 // Members add and organise but never delete or rewrite files; the server
