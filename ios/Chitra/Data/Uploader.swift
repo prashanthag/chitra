@@ -97,6 +97,7 @@ enum Uploader {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONEncoder().encode(CheckRequest(files: files))
+        Auth.apply(to: &request)
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
@@ -186,6 +187,7 @@ enum Uploader {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        Auth.apply(to: &request)
         do {
             let (data, response) = try await session.upload(for: request, fromFile: body)
             guard let http = response as? HTTPURLResponse else {

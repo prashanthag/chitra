@@ -5,6 +5,7 @@ import SwiftUI
 struct RootView: View {
     @StateObject private var library = GalleryViewModel()
     @ObservedObject private var backup = BackupService.shared
+    @ObservedObject private var auth = AuthSession.shared
 
     @State private var tab: Tab = Tab.initial
     /// Bumped whenever album membership changes anywhere, so the Albums tab
@@ -48,6 +49,24 @@ struct RootView: View {
             // scenePhase is already .active by the time the first view appears,
             // so its onChange never fires for the launch itself.
             backup.resumeIfEnabled()
+        }
+        // Accounts: a 401 anywhere asks to sign in; the Locked folder asks
+        // for the password on every open and whenever the session relocked.
+        .sheet(isPresented: $auth.needsLogin) {
+            LoginSheet(serverURL: library.serverURL) { library.refresh(); albumsChanged += 1 }
+        }
+        .sheet(isPresented: $auth.needsUnlock) {
+            UnlockSheet(serverURL: library.serverURL)
+        }
+        .task(id: library.serverURL) {
+            await auth.refresh(serverURL: library.serverURL)
+            if let name = DebugHooks.loginName {
+                DebugHooks.loginName = nil
+                if (try? await auth.login(serverURL: library.serverURL, name: name,
+                                          password: DebugHooks.loginPassword ?? "")) != nil {
+                    library.refresh()
+                }
+            }
         }
     }
 }

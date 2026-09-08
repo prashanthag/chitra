@@ -13,6 +13,7 @@ struct SettingsView: View {
 
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var backup = BackupService.shared
+    @ObservedObject private var auth = AuthSession.shared
 
     @State private var url: String = ""
     @State private var health: String?
@@ -20,6 +21,11 @@ struct SettingsView: View {
     @State private var albums: [DeviceAlbum] = []
     @State private var ledgerCount = 0
     @State private var permissionDenied = false
+    @State private var users: [User] = []
+    @State private var creatingAdmin = false
+    @State private var addingUser = false
+    @State private var changingPassword = false
+    @State private var accountError: String?
 
     private var prefs: BackupPrefs { settings.backup }
     private var selected: Set<String> { prefs.albumIds ?? DeviceMedia.defaultAlbumIds(albums) }
@@ -27,10 +33,31 @@ struct SettingsView: View {
     var body: some View {
         List {
             serverSection
+            accountSection
+            if auth.isAdmin { usersSection }
             backupSection
             statusSection
             albumsSection
         }
+        .sheet(isPresented: $creatingAdmin) {
+            NewAccountSheet(serverURL: serverURL, firstAdmin: true) { created, password in
+                // The server now requires a login; use the account just made.
+                Task {
+                    try? await auth.login(serverURL: serverURL, name: created.name, password: password)
+                    await loadUsers()
+                }
+            }
+        }
+        .sheet(isPresented: $addingUser) {
+            NewAccountSheet(serverURL: serverURL, firstAdmin: false) { _, _ in Task { await loadUsers() } }
+        }
+        .sheet(isPresented: $changingPassword) {
+            ChangePasswordSheet(serverURL: serverURL)
+        }
+        .task(id: "\(serverURL)-\(auth.user?.id ?? 0)") { await loadUsers() }
+        .alert("Account", isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(accountError ?? "") }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { url = serverURL }
@@ -71,6 +98,66 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
             }
         }
+    }
+
+    /// Accounts: an open server until the first (admin) account exists,
+    /// then sign in / sign out and the password. Admins also manage users.
+    private var accountSection: some View {
+        Section {
+            if let user = auth.user {
+                LabeledContent("Signed in as", value: "\(user.name) · \(user.role)")
+                Button("Change Password…") { changingPassword = true }
+                Button("Sign Out", role: .destructive) {
+                    Task { await auth.logout(serverURL: serverURL) }
+                }
+            } else if auth.authRequired {
+                Button("Sign In…") { auth.needsLogin = true }
+            } else {
+                Button("Create Admin Account…") { creatingAdmin = true }
+            }
+        } header: {
+            Text("Account")
+        } footer: {
+            if auth.user == nil && !auth.authRequired {
+                Text("Open server: anyone on the network can browse. Creating the admin account makes everyone sign in; admins manage accounts, the Locked folder and the Trash, members can add and organise but not delete.")
+            } else if auth.isSignedIn && !auth.canDelete {
+                Text("Member account: you can upload, favourite and organise, but not delete or change files.")
+            }
+        }
+    }
+
+    private var usersSection: some View {
+        Section {
+            ForEach(users) { user in
+                HStack {
+                    Text(user.name)
+                    Spacer()
+                    Text(user.role).foregroundStyle(Palette.secondaryText)
+                }
+                .swipeActions {
+                    if user.id != auth.user?.id {
+                        Button(role: .destructive) {
+                            Task {
+                                do {
+                                    try await PhotoAPI(baseUrl: serverURL).deleteUser(user.id)
+                                    await loadUsers()
+                                } catch { accountError = "Could not delete \(user.name)" }
+                            }
+                        } label: { Label("Delete", systemImage: "trash") }
+                    }
+                }
+            }
+            Button("Add User…") { addingUser = true }
+        } header: {
+            Text("Users")
+        } footer: {
+            Text("Swipe an account to delete it; its locked items are released.")
+        }
+    }
+
+    private func loadUsers() async {
+        guard auth.isAdmin else { users = []; return }
+        users = (try? await PhotoAPI(baseUrl: serverURL).users()) ?? []
     }
 
     private var backupSection: some View {

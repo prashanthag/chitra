@@ -7,6 +7,7 @@ import PhotosUI
 /// action button.
 struct LibraryView: View {
     @ObservedObject var vm: GalleryViewModel
+    @ObservedObject private var auth = AuthSession.shared
 
     @State private var path: [LibraryRoute] = LibraryRoute.initialPath()
     @State private var viewerIndex: Int?
@@ -33,20 +34,23 @@ struct LibraryView: View {
             get: { viewerIndex.map { ViewerPresentation(index: $0) } },
             set: { if $0 == nil { viewerIndex = nil } }
         )) { presentation in
+            // Members add and organise but never delete or rewrite files;
+            // the Locked folder is an admin feature.
             ViewerView(
                 items: vm.items,
                 initialIndex: presentation.index,
                 serverURL: vm.serverURL,
                 onToggleFavorite: { vm.toggleFavorite($0) },
-                onTrash: { vm.trash($0) },
+                onTrash: auth.canDelete ? { vm.trash($0) } : nil,
                 onArchive: { vm.archive($0) },
-                onRestore: { vm.restore($0) },
-                onRotate: { vm.rotate($0) },
-                onEdit: { item in
+                onRestore: auth.canDelete ? { vm.restore($0) } : nil,
+                onRotate: auth.canDelete ? { vm.rotate($0) } : nil,
+                onEdit: auth.canDelete ? { item in
                     viewerIndex = nil
                     path.append(.editor(item))
-                },
-                onAlbumChanged: {})
+                } : nil,
+                onAlbumChanged: {},
+                onLock: auth.canLock ? { vm.lock($0) } : nil)
         }
         .onChange(of: vm.items.isEmpty) { _, empty in
             // Debug builds only: CHITRA_ROUTE=viewer opens the first item so
@@ -121,16 +125,23 @@ struct LibraryView: View {
                   systemImage: item.isFavorite ? "heart.slash" : "heart")
         }
         if item.isTrashed {
-            Button { vm.restore(item) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
+            if auth.canDelete {
+                Button { vm.restore(item) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
+            }
         } else {
             Button { vm.archive(item) } label: {
                 Label(item.archived == 1 ? "Unarchive" : "Archive",
                       systemImage: item.archived == 1 ? "tray.and.arrow.up" : "archivebox")
             }
-            if !item.isVideo {
-                Button { path.append(.editor(item)) } label: { Label("Adjust", systemImage: "slider.horizontal.3") }
+            if auth.canLock {
+                Button { vm.lock(item) } label: { Label("Move to Locked Folder", systemImage: "lock") }
             }
-            Button(role: .destructive) { vm.trash(item) } label: { Label("Delete", systemImage: "trash") }
+            if auth.canDelete {
+                if !item.isVideo {
+                    Button { path.append(.editor(item)) } label: { Label("Adjust", systemImage: "slider.horizontal.3") }
+                }
+                Button(role: .destructive) { vm.trash(item) } label: { Label("Delete", systemImage: "trash") }
+            }
         }
     }
 
@@ -155,7 +166,8 @@ struct LibraryView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Menu {
                     Picker("Filter", selection: Binding(get: { vm.filter }, set: { vm.setFilter($0) })) {
-                        ForEach(Filter.allCases) { filter in
+                        // The Trash is admin-only.
+                        ForEach(Filter.allCases.filter { $0 != .trash || auth.canDelete }) { filter in
                             Label(filter.label, systemImage: filter.symbol).tag(filter)
                         }
                     }
@@ -174,7 +186,9 @@ struct LibraryView: View {
 
                 Menu {
                     Button { vm.beginSelection() } label: { Label("Select", systemImage: "checkmark.circle") }
-                    Button { vm.rescan() } label: { Label("Rescan Library", systemImage: "arrow.clockwise") }
+                    if auth.canDelete {
+                        Button { vm.rescan() } label: { Label("Rescan Library", systemImage: "arrow.clockwise") }
+                    }
                     Divider()
                     Button { path.append(.settings) } label: { Label("Settings", systemImage: "gearshape") }
                     Section("Library") {
@@ -193,15 +207,21 @@ struct LibraryView: View {
             Button { vm.favoriteSelected() } label: { Image(systemName: "heart") }
             Spacer()
             Button { vm.archiveSelected() } label: { Image(systemName: "archivebox") }
-            Spacer()
-            if vm.filter == .trash {
-                Button { vm.restoreSelected() } label: { Image(systemName: "arrow.uturn.backward") }
+            if auth.canLock && vm.filter != .trash {
                 Spacer()
-                Button(role: .destructive) { confirmDeleteSelection = true } label: {
-                    Image(systemName: "trash.slash")
+                Button { vm.lockSelected() } label: { Image(systemName: "lock") }
+            }
+            if auth.canDelete {
+                Spacer()
+                if vm.filter == .trash {
+                    Button { vm.restoreSelected() } label: { Image(systemName: "arrow.uturn.backward") }
+                    Spacer()
+                    Button(role: .destructive) { confirmDeleteSelection = true } label: {
+                        Image(systemName: "trash.slash")
+                    }
+                } else {
+                    Button(role: .destructive) { vm.trashSelected() } label: { Image(systemName: "trash") }
                 }
-            } else {
-                Button(role: .destructive) { vm.trashSelected() } label: { Image(systemName: "trash") }
             }
         }
         .font(.system(size: 20))
@@ -242,15 +262,26 @@ struct LibraryView: View {
         }
     }
 
+    @ViewBuilder
     private func unreachable(_ error: String) -> some View {
-        ContentUnavailableView {
-            Label("Can't Reach the Server", systemImage: "wifi.exclamationmark")
-        } description: {
-            Text(vm.serverURL)
-            Text(error).font(.caption)
-        } actions: {
-            Button("Try Again") { vm.refresh() }
-            Button("Server Settings") { path.append(.settings) }
+        if auth.authRequired && !auth.isSignedIn {
+            ContentUnavailableView {
+                Label("Sign In Required", systemImage: "person.crop.circle.badge.questionmark")
+            } description: {
+                Text("This server has accounts. Sign in to see the library.")
+            } actions: {
+                Button("Sign In") { auth.needsLogin = true }
+            }
+        } else {
+            ContentUnavailableView {
+                Label("Can't Reach the Server", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(vm.serverURL)
+                Text(error).font(.caption)
+            } actions: {
+                Button("Try Again") { vm.refresh() }
+                Button("Server Settings") { path.append(.settings) }
+            }
         }
     }
 }

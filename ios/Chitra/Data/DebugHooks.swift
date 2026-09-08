@@ -23,6 +23,10 @@ enum DebugHooks {
     /// ("settings", "people", "map").
     static var initialFilter: Filter?
     static var initialRoute: String?
+    /// Sign in at launch (CHITRA_LOGIN_NAME + CHITRA_LOGIN_PASSWORD), the
+    /// Android `login_name` / `login_password` extras.
+    static var loginName: String?
+    static var loginPassword: String?
 
     static func apply() {
         #if DEBUG
@@ -32,6 +36,11 @@ enum DebugHooks {
         if let url = env["CHITRA_SERVER_URL"], !url.isEmpty { settings.setServerURL(url) }
         if let filter = env["CHITRA_FILTER"] { initialFilter = Filter(rawValue: filter.lowercased()) }
         if let route = env["CHITRA_ROUTE"] { initialRoute = route.lowercased() }
+        if let name = env["CHITRA_LOGIN_NAME"], !name.isEmpty {
+            loginName = name
+            loginPassword = env["CHITRA_LOGIN_PASSWORD"] ?? ""
+        }
+        if let clear = env["CHITRA_SESSION_CLEAR"], flag(clear) { Auth.token = nil }
         if let videos = env["CHITRA_BACKUP_VIDEOS"] { settings.setBackupVideos(flag(videos)) }
         if let wifi = env["CHITRA_BACKUP_WIFI_ONLY"] { settings.setBackupWifiOnly(flag(wifi)) }
 

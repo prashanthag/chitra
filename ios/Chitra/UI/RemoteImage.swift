@@ -33,8 +33,10 @@ actor ImageLoader {
         if let running = inFlight[urlString] { return await running.value }
         guard let url = URL(string: urlString) else { return nil }
 
+        var request = URLRequest(url: url)
+        Auth.apply(to: &request)
         let task = Task<UIImage?, Never> { [session] in
-            guard let (data, response) = try? await session.data(from: url),
+            guard let (data, response) = try? await session.data(for: request),
                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let image = UIImage(data: data)
             else { return nil }

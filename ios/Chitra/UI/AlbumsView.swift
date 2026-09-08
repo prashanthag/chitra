@@ -25,6 +25,10 @@ struct FilteredFeed: Hashable {
     var favorites: Bool = false
     var archived: Bool = false
     var trashed: Bool = false
+    /// My Locked folder (admins; the session must be unlocked first).
+    var locked: Bool = false
+
+    static let lockedFolder = FilteredFeed(title: "Locked Folder", kind: nil, locked: true)
 }
 
 /// The Albums tab, laid out like Photos': a grid of albums up top, then
@@ -34,6 +38,7 @@ struct AlbumsView: View {
     var reloadKey: Int
     var onAlbumsChanged: () -> Void
 
+    @ObservedObject private var auth = AuthSession.shared
     @State private var path: [AlbumsRoute] = AlbumsRoute.initialPath()
     @State private var folders: [Album]?
     @State private var mine: [UserAlbum] = []
@@ -98,12 +103,21 @@ struct AlbumsView: View {
                     section("My Albums") {
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(mine) { album in
-                                NavigationLink(value: AlbumsRoute.userAlbum(album)) {
-                                    AlbumTile(coverId: album.cover, title: album.name,
-                                              subtitle: "\(album.count)" + (album.shareToken != nil ? " · Shared" : ""),
-                                              serverURL: serverURL)
+                                let tile = AlbumTile(coverId: album.locked ? nil : album.cover, title: album.name,
+                                                     subtitle: album.locked ? "Locked" : "\(album.count)" + (album.shareToken != nil ? " · Shared" : ""),
+                                                     serverURL: serverURL, locked: album.locked)
+                                if album.locked {
+                                    // A locked album shows a black cover and asks for the
+                                    // password every time it is opened.
+                                    Button {
+                                        auth.afterUnlock = { path.append(.userAlbum(album)) }
+                                        auth.needsUnlock = true
+                                    } label: { tile }
+                                    .buttonStyle(.plain)
+                                } else {
+                                    NavigationLink(value: AlbumsRoute.userAlbum(album)) { tile }
+                                        .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -161,8 +175,20 @@ struct AlbumsView: View {
                 section("Utilities") {
                     rows {
                         row("Archived", "archivebox", value: .filtered(FilteredFeed(title: "Archived", kind: nil, archived: true)))
-                        Divider().padding(.leading, 52)
-                        row("Recently Deleted", "trash", value: .filtered(FilteredFeed(title: "Recently Deleted", kind: nil, trashed: true)))
+                        // The Trash and the Locked folder are admin features:
+                        // members never see either.
+                        if auth.canDelete {
+                            Divider().padding(.leading, 52)
+                            row("Recently Deleted", "trash", value: .filtered(FilteredFeed(title: "Recently Deleted", kind: nil, trashed: true)))
+                        }
+                        if auth.canLock {
+                            Divider().padding(.leading, 52)
+                            Button {
+                                auth.afterUnlock = { path.append(.filtered(.lockedFolder)) }
+                                auth.needsUnlock = true
+                            } label: { rowLabel("Locked Folder", "lock") }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
             }
@@ -185,18 +211,20 @@ struct AlbumsView: View {
     }
 
     private func row(_ title: String, _ symbol: String, value: AlbumsRoute) -> some View {
-        NavigationLink(value: value) {
-            HStack(spacing: 12) {
-                Image(systemName: symbol).frame(width: 28)
-                Text(title)
-                Spacer()
-                Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
+        NavigationLink(value: value) { rowLabel(title, symbol) }
+            .buttonStyle(.plain)
+    }
+
+    private func rowLabel(_ title: String, _ symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).frame(width: 28)
+            Text(title)
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -235,19 +263,23 @@ struct AlbumTile: View {
     let title: String
     let subtitle: String
     let serverURL: String
+    /// Locked albums show a black cover with a lock instead of a photo.
+    var locked = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    if let coverId {
+                    if locked {
+                        Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
+                    } else if let coverId {
                         RemoteImage(url: Urls.thumb(serverURL, coverId))
                     } else {
                         Image(systemName: "photo").font(.largeTitle).foregroundStyle(.tertiary)
                     }
                 }
-                .background(Palette.tile)
+                .background(locked ? Color.black : Palette.tile)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             Text(title).font(.subheadline).lineLimit(1)
             Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -264,11 +296,17 @@ struct FilteredMediaView: View {
     let serverURL: String
     var onAlbumChanged: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var auth = AuthSession.shared
     @State private var items: [MediaItem] = []
     @State private var page = 0
     @State private var loading = false
     @State private var endReached = false
     @State private var viewer: ViewerPresentation?
+    @State private var confirmLockFolder = false
+    @State private var notice: String?
+
+    private var isLockedFolder: Bool { feed?.locked == true }
 
     init(album: Album, serverURL: String, onAlbumChanged: @escaping () -> Void) {
         self.title = album.label
@@ -297,12 +335,66 @@ struct FilteredMediaView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { if items.isEmpty { load() } }
+        // The Locked folder closes after a minute without a touch; a viewer
+        // on top counts as activity.
+        .idleRelock(enabled: isLockedFolder && viewer == nil, seconds: auth.idleSeconds) {
+            Task { await auth.relock(serverURL: serverURL) }
+            dismiss()
+        }
+        // Opened again after the session relocked: the first page came back
+        // 401, so reload once the password has been given.
+        .onChange(of: auth.unlocked) { _, open in
+            if isLockedFolder && open && items.isEmpty { reload() }
+        }
+        .toolbar {
+            if album != nil && auth.canLock {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { confirmLockFolder = true } label: { Image(systemName: "lock") }
+                        .accessibilityLabel("Lock folder")
+                }
+            }
+        }
+        .confirmationDialog("Move every item of “\(title)” to your Locked folder?",
+                            isPresented: $confirmLockFolder, titleVisibility: .visible) {
+            Button("Lock Folder") {
+                Task {
+                    do {
+                        _ = try await PhotoAPI(baseUrl: serverURL).lockFolderAlbum(album?.album ?? "", folder: album?.folder)
+                        onAlbumChanged()
+                        dismiss()
+                    } catch { notice = error.localizedDescription }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("They vanish from every view and every other account until you unlock them.")
+        }
+        .alert("Could Not Lock", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(notice ?? "") }
         .fullScreenCover(item: $viewer) { presentation in
             ViewerView(items: presentation.snapshot ?? [],
                        initialIndex: presentation.index,
                        serverURL: serverURL,
-                       onAlbumChanged: onAlbumChanged)
+                       onAlbumChanged: onAlbumChanged,
+                       onLock: auth.canLock ? { item in
+                           Task {
+                               let api = PhotoAPI(baseUrl: serverURL)
+                               if isLockedFolder { _ = try? await api.unlockMedia([item.id]) }
+                               else { _ = try? await api.lockMedia([item.id]) }
+                               items.removeAll { $0.id == item.id }
+                               onAlbumChanged()
+                           }
+                       } : nil,
+                       lockedView: isLockedFolder)
         }
+    }
+
+    private func reload() {
+        items = []
+        page = 0
+        endReached = false
+        load()
     }
 
     private func load() {
@@ -316,7 +408,8 @@ struct FilteredMediaView: View {
                 kind: feed?.kind, album: album?.album, folder: album?.folder,
                 favorites: feed?.favorites == true ? 1 : nil,
                 trashed: feed?.trashed == true ? 1 : nil,
-                archived: feed?.archived == true ? 1 : nil)
+                archived: feed?.archived == true ? 1 : nil,
+                locked: isLockedFolder ? 1 : nil)
             guard let response else { return }
             items += response.items
             page += 1
@@ -338,6 +431,8 @@ struct UserAlbumView: View {
     var onDeleted: () -> Void
     var onAlbumChanged: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var auth = AuthSession.shared
     @State private var items: [MediaItem]?
     @State private var confirmDelete = false
     @State private var shareURL: URL?
@@ -367,20 +462,41 @@ struct UserAlbumView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        // Mint the public link and hand it to the share sheet.
-                        Task {
-                            do {
-                                let response = try await api.shareUserAlbum(album.id)
-                                let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
-                                shareURL = URL(string: base + response.url)
-                            } catch {
-                                notice = error.localizedDescription
+                    if !album.locked {
+                        Button {
+                            // Mint the public link and hand it to the share sheet.
+                            Task {
+                                do {
+                                    let response = try await api.shareUserAlbum(album.id)
+                                    let base = serverURL.hasSuffix("/") ? String(serverURL.dropLast()) : serverURL
+                                    shareURL = URL(string: base + response.url)
+                                } catch {
+                                    notice = error.localizedDescription
+                                }
                             }
+                        } label: { Label("Share Link", systemImage: "link") }
+                    }
+                    if auth.canLock {
+                        // Locking takes the album and its photos into the
+                        // Locked folder; the screen is left because the
+                        // album has moved.
+                        Button {
+                            Task {
+                                do {
+                                    if album.locked { try await api.unlockUserAlbum(album.id) }
+                                    else { try await api.lockUserAlbum(album.id) }
+                                    onDeleted()
+                                } catch { notice = error.localizedDescription }
+                            }
+                        } label: {
+                            Label(album.locked ? "Unlock Album" : "Lock Album",
+                                  systemImage: album.locked ? "lock.open" : "lock")
                         }
-                    } label: { Label("Share Link", systemImage: "link") }
-                    Button(role: .destructive) { confirmDelete = true } label: {
-                        Label("Delete Album", systemImage: "trash")
+                    }
+                    if auth.canDelete {
+                        Button(role: .destructive) { confirmDelete = true } label: {
+                            Label("Delete Album", systemImage: "trash")
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -389,6 +505,15 @@ struct UserAlbumView: View {
         }
         .task(id: "\(album.id)-\(reloadKey)-\(tick)") {
             items = (try? await api.userAlbumMedia(album.id)) ?? []
+        }
+        // A locked album closes after a minute without a touch, and reloads
+        // once the password has been given after a relock.
+        .idleRelock(enabled: album.locked && viewer == nil, seconds: auth.idleSeconds) {
+            Task { await auth.relock(serverURL: serverURL) }
+            dismiss()
+        }
+        .onChange(of: auth.unlocked) { _, open in
+            if album.locked && open { tick += 1 }
         }
         .confirmationDialog("Delete “\(album.name)”?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete Album", role: .destructive) {
@@ -404,7 +529,7 @@ struct UserAlbumView: View {
         .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
             if let shareURL { ShareSheet(items: [shareURL]) }
         }
-        .alert("Share Failed", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+        .alert("Something Went Wrong", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(notice ?? "")

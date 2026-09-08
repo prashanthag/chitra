@@ -23,8 +23,10 @@ enum Downloader {
             ? item.name.replacingOccurrences(of: "\\.hei[cf]$", with: ".jpg", options: [.regularExpression, .caseInsensitive])
             : item.name
         guard let url = URL(string: source) else { return nil }
+        var request = URLRequest(url: url)
+        Auth.apply(to: &request)
         do {
-            let (temporary, response) = try await URLSession.shared.download(from: url)
+            let (temporary, response) = try await URLSession.shared.download(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return nil }
             let destination = FileManager.default.temporaryDirectory.appendingPathComponent(name)
             try? FileManager.default.removeItem(at: destination)

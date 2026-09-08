@@ -13,9 +13,16 @@ enum APIError: LocalizedError {
         }
     }
 
-    /// The server refuses writes while the library is mounted read-only.
+    /// The server refuses writes while the library is mounted read-only, and
+    /// refuses deletes and file changes from member accounts.
     var isForbidden: Bool {
         if case .http(403) = self { return true }
+        return false
+    }
+
+    /// Login (or the Locked folder password) wanted.
+    var isUnauthorized: Bool {
+        if case .http(401) = self { return true }
         return false
     }
 }
@@ -54,8 +61,16 @@ struct PhotoAPI {
     }
 
     private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
+        var request = request
+        Auth.apply(to: &request)
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 401 {
+                // Signed out, or the Locked folder wants its password again:
+                // the session object decides which sheet to show.
+                let path = request.url?.path ?? ""
+                Task { @MainActor in AuthSession.shared.unauthorized(path: path) }
+            }
             throw APIError.http(http.statusCode)
         }
         do {
@@ -99,7 +114,7 @@ struct PhotoAPI {
                folder: String? = nil, q: String? = nil, favorites: Int? = nil,
                year: Int? = nil, month: Int? = nil, trashed: Int? = nil,
                archived: Int? = nil, dated: Int? = nil, undated: Int? = nil,
-               sort: String? = nil) async throws -> MediaPage {
+               sort: String? = nil, locked: Int? = nil) async throws -> MediaPage {
         try await get("api/media", [
             "page": String(page), "per_page": String(perPage),
             "kind": kind, "album": album, "folder": folder, "q": q,
@@ -107,7 +122,73 @@ struct PhotoAPI {
             "month": month.map(String.init), "trashed": trashed.map(String.init),
             "archived": archived.map(String.init), "dated": dated.map(String.init),
             "undated": undated.map(String.init), "sort": sort,
+            "locked": locked.map(String.init),
         ], as: MediaPage.self)
+    }
+
+    // MARK: - Accounts and the Locked folder
+
+    func authState() async throws -> AuthState {
+        try await get("api/auth/state", as: AuthState.self)
+    }
+
+    func login(name: String, password: String) async throws -> LoginResp {
+        try await send(try request("POST", "api/login", body: try Self.encoder.encode(LoginBody(name: name, password: password))),
+                       as: LoginResp.self)
+    }
+
+    func logout() async throws {
+        try await fire("POST", "api/logout")
+    }
+
+    func users() async throws -> [User] {
+        try await get("api/users", as: [User].self)
+    }
+
+    /// The first account on an open server becomes the admin whatever role is
+    /// asked for; after that only admins may call this.
+    func createUser(name: String, password: String, role: String) async throws -> User {
+        try await send(try request("POST", "api/users", body: try Self.encoder.encode(NewUserBody(name: name, password: password, role: role))),
+                       as: UserResp.self).user
+    }
+
+    func deleteUser(_ id: Int) async throws {
+        _ = try await send(try request("DELETE", "api/users/\(id)"), as: OkResp.self)
+    }
+
+    func changePassword(old: String, new: String) async throws {
+        try await fire("POST", "api/users/me/password", body: try Self.encoder.encode(ChangePasswordBody(old: old, new: new)))
+    }
+
+    /// Opens the Locked folder for this session; 403 on a wrong password.
+    func unlockLocked(password: String) async throws {
+        try await fire("POST", "api/locked/unlock", body: try Self.encoder.encode(PasswordBody(password: password)))
+    }
+
+    func lockLocked() async throws {
+        try await fire("POST", "api/locked/lock")
+    }
+
+    func lockMedia(_ ids: [String]) async throws -> LockResp {
+        try await send(try request("POST", "api/media/lock", body: try Self.encoder.encode(IdsBody(ids: ids))), as: LockResp.self)
+    }
+
+    func unlockMedia(_ ids: [String]) async throws -> LockResp {
+        try await send(try request("POST", "api/media/unlock", body: try Self.encoder.encode(IdsBody(ids: ids))), as: LockResp.self)
+    }
+
+    func lockUserAlbum(_ id: Int) async throws {
+        try await fire("POST", "api/user_albums/\(id)/lock")
+    }
+
+    func unlockUserAlbum(_ id: Int) async throws {
+        try await fire("POST", "api/user_albums/\(id)/unlock")
+    }
+
+    /// Lock every item of a folder album (library folder or phone folder).
+    func lockFolderAlbum(_ album: String, folder: String? = nil) async throws -> LockResp {
+        try await send(try request("POST", "api/albums/lock", body: try Self.encoder.encode(FolderLockBody(album: album, folder: folder))),
+                       as: LockResp.self)
     }
 
     func albums() async throws -> [Album] {

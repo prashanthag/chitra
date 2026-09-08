@@ -11,6 +11,13 @@ extension KeyedDecodingContainer {
     func opt<T: Decodable>(_ key: Key) -> T? {
         (try? decodeIfPresent(T.self, forKey: key)) ?? nil
     }
+
+    /// A flag the server may send as true/false or 1/0; missing = false.
+    func flag(_ key: Key) -> Bool {
+        if let b: Bool = opt(key) { return b }
+        if let i: Int = opt(key) { return i != 0 }
+        return false
+    }
 }
 
 struct MediaItem: Codable, Identifiable, Hashable {
@@ -226,9 +233,13 @@ struct UserAlbum: Codable, Identifiable, Hashable {
     var shareToken: String?
     /// Only when listed with ?media_id=: whether that item is in the album.
     var contains: Bool?
+    /// In the owner's Locked folder (admins only see these at all).
+    var locked = false
+    /// Locked and the session is not open: no cover, contents need the password.
+    var sealed = false
 
     enum CodingKeys: String, CodingKey {
-        case id, name, count, cover, contains
+        case id, name, count, cover, contains, locked, sealed
         case shareToken = "share_token"
     }
 
@@ -240,6 +251,8 @@ struct UserAlbum: Codable, Identifiable, Hashable {
         cover = c.opt(.cover)
         shareToken = c.opt(.shareToken)
         contains = c.opt(.contains)
+        locked = c.flag(.locked)
+        sealed = c.flag(.sealed)
     }
 }
 
@@ -346,7 +359,96 @@ struct Health: Codable {
     }
 }
 
+// Accounts and the Locked folder.
+
+struct User: Codable, Identifiable, Hashable {
+    var id: Int
+    var name: String
+    var role: String
+
+    var isAdmin: Bool { role == "admin" }
+}
+
+/// `GET /api/auth/state`: whether a login is needed, who this session is,
+/// whether the Locked folder is open, and what this account may do.
+struct AuthState: Codable {
+    var authRequired = false
+    var user: User?
+    var unlocked = false
+    /// Members add and organise but never delete or rewrite files.
+    var canDelete = true
+    var unlockIdleSeconds = 60
+
+    enum CodingKeys: String, CodingKey {
+        case user, unlocked
+        case authRequired = "auth_required"
+        case canDelete = "can_delete"
+        case unlockIdleSeconds = "unlock_idle_seconds"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        authRequired = c.flag(.authRequired)
+        user = c.opt(.user)
+        unlocked = c.flag(.unlocked)
+        canDelete = c.get(.canDelete, true)
+        unlockIdleSeconds = c.get(.unlockIdleSeconds, 60)
+    }
+}
+
+struct LoginResp: Codable {
+    var ok: Bool
+    var token: String
+    var user: User
+}
+
+struct UserResp: Codable {
+    var ok: Bool
+    var user: User
+}
+
+struct LockResp: Codable {
+    var ok: Bool = false
+    var locked: Int = 0
+    var unlocked: Int = 0
+
+    enum CodingKeys: String, CodingKey { case ok, locked, unlocked }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = c.get(.ok, false)
+        locked = c.get(.locked, 0)
+        unlocked = c.get(.unlocked, 0)
+    }
+}
+
 // Request bodies.
+
+struct LoginBody: Encodable {
+    var name: String
+    var password: String
+    var device: String = "ios"
+}
+
+struct NewUserBody: Encodable {
+    var name: String
+    var password: String
+    var role: String
+}
+
+struct PasswordBody: Encodable {
+    var password: String
+}
+
+struct ChangePasswordBody: Encodable {
+    var old: String
+    var new: String
+}
+
+struct FolderLockBody: Encodable {
+    var album: String
+    var folder: String?
+}
 
 struct IdsBody: Encodable {
     var ids: [String]

@@ -189,10 +189,29 @@ final class GalleryViewModel: ObservableObject {
 
     private func actionFailed(_ error: Error) {
         if let apiError = error as? APIError, apiError.isForbidden {
-            notice = "Rejected: library is read-only"
+            notice = AuthSession.shared.isSignedIn && !AuthSession.shared.canDelete
+                ? "Members cannot delete or change files: ask an admin"
+                : "Rejected: library is read-only"
+        } else if let apiError = error as? APIError, apiError.isUnauthorized {
+            return   // the sign-in / unlock sheet is already on its way
         } else {
             notice = "Action failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Admins only: into my Locked folder, out of every view.
+    func lock(_ item: MediaItem) {
+        Task { [api] in
+            do {
+                _ = try await api.lockMedia([item.id])
+                remove(item.id)
+                notice = "Moved to the Locked folder"
+            } catch { actionFailed(error) }
+        }
+    }
+
+    func lockSelected() {
+        runBatch { api, ids in _ = try await api.lockMedia(ids) } thenRemove: { true }
     }
 
     func toggleFavorite(_ item: MediaItem) {

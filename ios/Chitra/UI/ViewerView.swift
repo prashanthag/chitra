@@ -16,6 +16,9 @@ struct ViewerView: View {
     var onEdit: ((MediaItem) -> Void)?
     /// nil hides "Add to Album".
     var onAlbumChanged: (() -> Void)?
+    /// Admins only: move to the Locked folder (or, in it, back out).
+    var onLock: ((MediaItem) -> Void)?
+    var lockedView = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var index: Int
@@ -35,7 +38,9 @@ struct ViewerView: View {
          onRestore: ((MediaItem) -> Void)? = nil,
          onRotate: ((MediaItem) -> Void)? = nil,
          onEdit: ((MediaItem) -> Void)? = nil,
-         onAlbumChanged: (() -> Void)? = nil) {
+         onAlbumChanged: (() -> Void)? = nil,
+         onLock: ((MediaItem) -> Void)? = nil,
+         lockedView: Bool = false) {
         self.items = items
         self.initialIndex = initialIndex
         self.serverURL = serverURL
@@ -46,6 +51,8 @@ struct ViewerView: View {
         self.onRotate = onRotate
         self.onEdit = onEdit
         self.onAlbumChanged = onAlbumChanged
+        self.onLock = onLock
+        self.lockedView = lockedView
         _index = State(initialValue: max(0, min(initialIndex, items.count - 1)))
     }
 
@@ -186,6 +193,12 @@ struct ViewerView: View {
                     Button { onArchive(item); dismiss() } label: {
                         Label(item.archived == 1 ? "Unarchive" : "Archive",
                               systemImage: item.archived == 1 ? "tray.and.arrow.up" : "archivebox")
+                    }
+                }
+                if let onLock {
+                    Button { onLock(item); dismiss() } label: {
+                        Label(lockedView ? "Remove from Locked Folder" : "Move to Locked Folder",
+                              systemImage: lockedView ? "lock.open" : "lock")
                     }
                 }
             } else if let onRestore {
@@ -385,7 +398,10 @@ private struct VideoPage: View {
         }
         .onAppear {
             guard let source = URL(string: url) else { return }
-            let created = AVPlayer(url: source)
+            // The session header rides along on the redirect to the original
+            // or the transcode, the way the JSON calls carry it.
+            let asset = AVURLAsset(url: source, options: ["AVURLAssetHTTPHeaderFieldsKey": Auth.headers()])
+            let created = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             created.play()
             player = created
         }

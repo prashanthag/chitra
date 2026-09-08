@@ -25,6 +25,31 @@ check("play", Urls.play("http://h:1", "abc"), "http://h:1/api/media/abc/play?cod
 check("share link", Urls.shareLink("http://h:1", "tok"), "http://h:1/s/tok")
 check("cluster thumb", Urls.clusterThumb("http://h:1", 7), "http://h:1/api/clusters/7/thumb")
 
+print("— Accounts —")
+let authJSON = Data(#"{"auth_required": true, "user": {"id": 5, "name": "ina", "role": "member"}, "can_delete": false, "unlock_idle_seconds": 60}"#.utf8)
+let authState = try! JSONDecoder().decode(AuthState.self, from: authJSON)
+check("auth_required", authState.authRequired)
+check("member is not admin", authState.user?.isAdmin == false)
+check("can_delete false", !authState.canDelete)
+check("idle seconds", "\(authState.unlockIdleSeconds)", "60")
+let sparseAuth = try! JSONDecoder().decode(AuthState.self, from: Data(#"{"auth_required": false}"#.utf8))
+check("missing can_delete defaults to true", sparseAuth.canDelete && sparseAuth.user == nil)
+let sealedAlbum = try! JSONDecoder().decode(UserAlbum.self, from: Data(#"{"id": 2, "name": "Mun", "locked": true, "sealed": 1, "cover": null}"#.utf8))
+check("locked album", sealedAlbum.locked && sealedAlbum.sealed && sealedAlbum.cover == nil)
+let plainAlbum = try! JSONDecoder().decode(UserAlbum.self, from: Data(#"{"id": 4, "name": "Trip"}"#.utf8))
+check("plain album not locked", !plainAlbum.locked && !plainAlbum.sealed)
+let savedToken = Auth.token
+Auth.token = nil
+var anonymousRequest = URLRequest(url: URL(string: "http://h:1/api/media")!)
+Auth.apply(to: &anonymousRequest)
+check("no token, no header", anonymousRequest.value(forHTTPHeaderField: "Authorization") == nil)
+Auth.token = "abc123"
+var signedRequest = URLRequest(url: URL(string: "http://h:1/api/media")!)
+Auth.apply(to: &signedRequest)
+check("bearer header", signedRequest.value(forHTTPHeaderField: "Authorization") ?? "", "Bearer abc123")
+check("headers dict", Auth.headers()["Authorization"] ?? "", "Bearer abc123")
+Auth.token = savedToken
+
 print("— ContentHash (server quick_hash vectors) —")
 let big = Data((0..<3_000_000).map { UInt8($0 % 251) })
 check("3 MB vector", ContentHash.of(big), "c0cf07b6c7a6aeb7bf336a2af9c5dc04364500e6a65b1249eb5b2e78be8ccf3e")

@@ -19,6 +19,7 @@ trap 'rm -rf "$out"' EXIT
 swiftc -O -o "$out/logic-check" \
   Chitra/API/Urls.swift \
   Chitra/API/Models.swift \
+  Chitra/Data/Auth.swift \
   Chitra/Data/ContentHash.swift \
   Chitra/Data/BackupPlanner.swift \
   Chitra/Data/DeviceMedia.swift \

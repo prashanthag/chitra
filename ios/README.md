@@ -132,4 +132,30 @@ SIMCTL_CHILD_CHITRA_LEDGER_CLEAR=1 \
 
 `CHITRA_ROUTE` picks where to start: a tab (`memories`, `albums`, `search`), a
 screen pushed inside one (`settings`, `people`, `map`), or `viewer` to open the
-first library item full-screen. A release build ignores all of it.
+first library item full-screen. `CHITRA_LOGIN_NAME` + `CHITRA_LOGIN_PASSWORD`
+sign in at launch (the Android `login_name` / `login_password` extras) and
+`CHITRA_SESSION_CLEAR=1` forgets a stored session. A release build ignores all
+of it.
+
+## Accounts, the Locked folder and member permissions
+
+The server is open until the first account is created (**Settings → Account →
+Create Admin Account**); from then on every call needs a session. `Auth`
+(`Data/Auth.swift`) keeps the bearer token and stamps it on every request —
+the JSON API, thumbnails, the video player, uploads and share downloads —
+and `AuthSession` (`UI/AuthSession.swift`) holds who is signed in. Any 401
+raises the sign-in sheet (or, while signed in, the Locked-folder password
+sheet), the counterpart of the Android `needLogin` / `needUnlock` flow.
+
+- **Admins** see the Locked folder (**Albums → Utilities**), lock photos from
+  the viewer, the tile menu and the selection bar, lock manual albums and
+  whole folders, and manage accounts in Settings. The Locked folder and a
+  locked album ask for the password on every open and close by themselves
+  after a minute without a touch (`IdleRelock`; the server relocks on the
+  same schedule).
+- **Members** upload, favourite, add to albums and share, but every delete,
+  trash, restore, edit, rotate, move and rescan is refused by the server; the
+  app hides those controls (`AuthSession.canDelete`) and never shows the
+  Trash or the Locked folder.
+
+Passwords are entered through `PasswordField`: masked, with an eye to reveal.
