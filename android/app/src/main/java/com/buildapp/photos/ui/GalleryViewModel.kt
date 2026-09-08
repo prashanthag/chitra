@@ -65,7 +65,7 @@ data class GalleryState(
     val needLogin: Boolean = false,
     val needUnlock: Boolean = false,
     val user: com.buildapp.photos.api.User? = null,
-    val canEdit: Boolean = true,
+    val canDelete: Boolean = true,
 )
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
@@ -322,7 +322,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val a = api?.authState() ?: return@launch
-                _state.update { it.copy(user = a.user, canEdit = a.canEdit) }
+                _state.update { it.copy(user = a.user, canDelete = a.canDelete) }
             } catch (_: Exception) {}
         }
     }
@@ -333,7 +333,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val r = api.login(com.buildapp.photos.api.LoginBody(name, password))
                 settings.setSession(r.token, r.user.name)
-                _state.update { it.copy(needLogin = false, user = r.user, canEdit = r.user.role == "admin", error = null) }
+                _state.update { it.copy(needLogin = false, user = r.user, canDelete = r.user.role == "admin", error = null) }
                 onResult(null)
                 refresh()
             } catch (e: Exception) {
@@ -346,7 +346,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try { api?.logout() } catch (_: Exception) {}
             settings.setSession(null, null)
-            _state.update { it.copy(user = null, canEdit = true) }
+            _state.update { it.copy(user = null, canDelete = true) }
             refresh()
         }
     }
@@ -368,7 +368,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun relock() { viewModelScope.launch { runCatching { api?.lockLocked() } } }
 
     val isAdmin: Boolean get() = _state.value.user?.role == "admin"
-    val canEdit: Boolean get() = _state.value.canEdit
+    val canDelete: Boolean get() = _state.value.canDelete
 
     /** An item left this list for another folder / album / the Locked folder. */
     fun dropItem(id: String) { _state.update { s -> s.copy(items = s.items.filterNot { it.id == id }) } }

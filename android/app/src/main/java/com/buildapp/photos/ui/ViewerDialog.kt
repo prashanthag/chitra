@@ -75,8 +75,8 @@ fun ViewerDialog(
     lockedView: Boolean = false,
     /** Move the item into another folder album (files move on disk). */
     onMove: ((MediaItem) -> Unit)? = null,
-    /** Members are viewers: no action that changes the library is offered. */
-    readOnly: Boolean = false,
+    /** Members never delete or rewrite files: edit, rotate and trash are not offered. */
+    canDelete: Boolean = true,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -142,7 +142,6 @@ fun ViewerDialog(
                             contentDescription = if (lockedView) "Unlock" else "Move to Locked folder", tint = Color.White)
                     }
                 }
-                if (!readOnly) {
                 IconButton(onClick = {
                     // Download the actual file and hand it to the share sheet.
                     scope.launch {
@@ -190,7 +189,7 @@ fun ViewerDialog(
                         Icon(Icons.Default.Restore, contentDescription = "Restore", tint = Color.White)
                     }
                 } else {
-                    if (item.kind == "photo") {
+                    if (item.kind == "photo" && canDelete) {
                         IconButton(onClick = { onEdit(item) }) {
                             Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.White)
                         }
@@ -205,10 +204,9 @@ fun ViewerDialog(
                             tint = Color.White,
                         )
                     }
-                    IconButton(onClick = { onTrash(item); onDismiss() }) {
+                    if (canDelete) IconButton(onClick = { onTrash(item); onDismiss() }) {
                         Icon(Icons.Default.Delete, contentDescription = "Trash", tint = Color.White)
                     }
-                }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)

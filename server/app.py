@@ -1059,11 +1059,10 @@ def _auth():
         return None
     if g.user is None and auth_required():
         return jsonify({"ok": False, "error": "login required"}), 401
-    # Members are viewers: only admins change the library. A member may still
-    # back up their phone and change their own password.
-    if (g.user is not None and g.user["role"] != "admin"
-            and request.method not in ("GET", "HEAD") and p not in _MEMBER_WRITE_PATHS):
-        return jsonify({"ok": False, "error": "view only: ask an admin"}), 403
+    # Members may add and organise (upload, favourites, albums, people, shares)
+    # but never delete or rewrite anything: only admins do that.
+    if g.user is not None and g.user["role"] != "admin" and _member_blocked(p, request.method):
+        return jsonify({"ok": False, "error": "members cannot delete or change files: ask an admin"}), 403
     # Every per-item route (thumb, preview, play, full, stream, info, edit,
     # rotate, favorite, trash, share...) 404s for a locked item unless it is
     # mine and my session is unlocked.
@@ -1073,7 +1072,17 @@ def _auth():
     return None
 
 
-_MEMBER_WRITE_PATHS = ("/api/upload", "/api/upload/check", "/api/users/me/password", "/api/logout", "/api/login")
+def _member_blocked(p: str, method: str) -> bool:
+    """Destructive for members: every DELETE (albums, shares, album items,
+    person tags), trash/purge, and anything that rewrites or moves files."""
+    if method == "DELETE":
+        return True
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if p in ("/api/media/batch_trash", "/api/media/batch_delete", "/api/media/move",
+             "/api/uploads/organize", "/api/rescan"):
+        return True
+    return p.endswith(("/trash", "/edit", "/rotate"))
 
 
 def _touches_locked(p: str) -> bool:
@@ -1129,8 +1138,8 @@ def auth_state():
         "user": dict(u) if u else None,
         "unlocked": session_unlocked(),
         "unlock_idle_seconds": UNLOCK_IDLE_SECONDS,
-        # Members only look; every change to the library is admin-only.
-        "can_edit": u is None or u["role"] == "admin",
+        # Members add and organise but never delete or rewrite files.
+        "can_delete": u is None or u["role"] == "admin",
     })
 
 

@@ -101,8 +101,8 @@ data class AuthState(
     @SerialName("auth_required") val authRequired: Boolean,
     val user: User? = null,
     val unlocked: Boolean = false,
-    /** Members only look; every change to the library is admin-only. */
-    @SerialName("can_edit") val canEdit: Boolean = true,
+    /** Members add and organise but never delete or rewrite files. */
+    @SerialName("can_delete") val canDelete: Boolean = true,
 )
 
 @Serializable
