@@ -986,7 +986,10 @@ app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024 * 1024  # 8 GiB upload cap
 # ---------- Accounts, sessions, Locked folder ----------
 
 SESSION_COOKIE = "chitra_session"
-UNLOCK_MINUTES = int(os.environ.get("UNLOCK_MINUTES", "15"))
+# The Locked folder stays open only while it is being used: every request
+# that touches locked content extends the window by this much; after that
+# long without one it is locked again and the password is needed.
+UNLOCK_IDLE_SECONDS = int(os.environ.get("UNLOCK_IDLE_SECONDS", "60"))
 # Paths that work without a login even once accounts exist.
 _OPEN_PREFIXES = ("/s/", "/static/")
 _OPEN_PATHS = {"/", "/api/health", "/api/login", "/api/auth/state"}
@@ -1044,6 +1047,11 @@ def _auth():
                     db().execute("UPDATE sessions SET last_seen = ? WHERE token = ?", (time.time(), tok))
                     db().commit()
     p = request.path
+    # Sliding window: activity on locked content keeps the Locked folder open.
+    if g.session and g.session["unlocked_until"] > time.time() and _touches_locked(p):
+        db().execute("UPDATE sessions SET unlocked_until = ? WHERE token = ?",
+                     (time.time() + UNLOCK_IDLE_SECONDS, g.session["token"]))
+        db().commit()
     if p in _OPEN_PATHS or p.startswith(_OPEN_PREFIXES) or request.method == "OPTIONS":
         return None
     # Bootstrap: creating the very first user needs no login.
@@ -1058,6 +1066,23 @@ def _auth():
     if m:
         _visible_or_404(m.group(1))
     return None
+
+
+def _touches_locked(p: str) -> bool:
+    """Is this request about my locked content (the Locked folder listing, a
+    locked item, a locked album)? Only those count as activity there."""
+    uid = g.user["id"]
+    if p == "/api/media" and request.args.get("locked") in ("1", "true"):
+        return True
+    m = re.match(r"^/api/media/([0-9a-f]{16})(?:/|$)", p)
+    if m:
+        r = db().execute("SELECT private_to FROM media WHERE id = ?", (m.group(1),)).fetchone()
+        return bool(r and r["private_to"] == uid)
+    m = re.match(r"^/api/user_albums/(\d+)(?:/|$)", p)
+    if m:
+        r = db().execute("SELECT private_to FROM albums WHERE id = ?", (int(m.group(1)),)).fetchone()
+        return bool(r and r["private_to"] == uid)
+    return False
 
 
 def _require_admin():
@@ -1095,7 +1120,7 @@ def auth_state():
         "auth_required": auth_required(),
         "user": dict(u) if u else None,
         "unlocked": session_unlocked(),
-        "unlock_minutes": UNLOCK_MINUTES,
+        "unlock_idle_seconds": UNLOCK_IDLE_SECONDS,
     })
 
 
@@ -1199,15 +1224,17 @@ def change_password():
 @app.post("/api/locked/unlock")
 def locked_unlock():
     """Open the Locked folder for this session: the account password again,
-    like Google Photos asks for device auth."""
+    like Google Photos asks for device auth. Admins only: members have no
+    Locked folder and never see locked content."""
     u = current_user()
     if not u:
         abort(401)
+    _require_admin()
     body = request.get_json(silent=True) or {}
     row = db().execute("SELECT password_hash FROM users WHERE id = ?", (u["id"],)).fetchone()
     if not _check_password(str(body.get("password") or ""), row["password_hash"]):
         return jsonify({"ok": False, "error": "wrong password"}), 403
-    until = time.time() + UNLOCK_MINUTES * 60
+    until = time.time() + UNLOCK_IDLE_SECONDS
     db().execute("UPDATE sessions SET unlocked_until = ? WHERE token = ?", (until, g.session["token"]))
     db().commit()
     return jsonify({"ok": True, "unlocked_until": until})
@@ -1228,6 +1255,7 @@ def lock_media():
     u = current_user()
     if not u:
         abort(401)
+    _require_admin()
     ids = _batch_ids()
     cur = db().executemany(
         "UPDATE media SET private_to = ?, share_token = NULL WHERE id = ? AND private_to IS NULL",
@@ -1241,6 +1269,7 @@ def unlock_media():
     u = current_user()
     if not u or not session_unlocked():
         abort(401)
+    _require_admin()
     ids = _batch_ids()
     cur = db().executemany(
         "UPDATE media SET private_to = NULL WHERE id = ? AND private_to = ?",
@@ -1257,6 +1286,7 @@ def lock_folder_album():
     u = current_user()
     if not u:
         abort(401)
+    _require_admin()
     body = request.get_json(silent=True) or {}
     album, folder = str(body.get("album") or ""), body.get("folder")
     if not album:
@@ -1280,6 +1310,7 @@ def lock_album(aid: int):
     u = current_user()
     if not u:
         abort(401)
+    _require_admin()
     if not db().execute("SELECT 1 FROM albums WHERE id = ? AND private_to IS NULL", (aid,)).fetchone():
         abort(404)
     db().execute("UPDATE albums SET private_to = ?, share_token = NULL WHERE id = ?", (u["id"], aid))
@@ -1295,6 +1326,7 @@ def unlock_album(aid: int):
     u = current_user()
     if not u or not session_unlocked():
         abort(401)
+    _require_admin()
     if not db().execute("SELECT 1 FROM albums WHERE id = ? AND private_to = ?", (aid, u["id"])).fetchone():
         abort(404)
     db().execute("UPDATE albums SET private_to = NULL WHERE id = ?", (aid,))
@@ -1427,6 +1459,7 @@ def list_media():
         u = current_user()
         if not u or not session_unlocked():
             abort(401, "unlock the Locked folder first")
+        _require_admin()
         where.append("m.private_to = ?")
         args.append(u["id"])
     else:
@@ -2484,7 +2517,7 @@ def _album_row(aid: int) -> dict | None:
     if not r:
         return None
     u = current_user()
-    mine_locked = r["private_to"] is not None and u is not None and r["private_to"] == u["id"]
+    mine_locked = r["private_to"] is not None and u is not None and r["private_to"] == u["id"] and u["role"] == "admin"
     if not _can_see(r) and not mine_locked:
         return None
     d = dict(r)
@@ -3087,13 +3120,18 @@ def merge_cluster(cid: int):
 @app.post("/api/clusters/<int:cid>/name")
 def name_cluster(cid: int):
     """Name a face group. The same name on two groups means the same person,
-    so naming a group after an existing one merges it into that group."""
-    name = (request.json or {}).get("name", "").strip()
+    so naming a group after an existing one merges it into that group - but
+    only once the client confirms: without {"merge": true} the request is
+    answered 409 with the existing group so the user can be asked first."""
+    body = request.json or {}
+    name = body.get("name", "").strip()
     if name:
         other = db().execute(
-            "SELECT id FROM clusters WHERE id != ? AND name IS NOT NULL AND LOWER(name) = LOWER(?)",
+            "SELECT id, name, count FROM clusters WHERE id != ? AND name IS NOT NULL AND LOWER(name) = LOWER(?)",
             (cid, name)).fetchone()
         if other:
+            if not body.get("merge"):
+                return jsonify({"ok": False, "exists": True, "cluster": dict(other)}), 409
             merged = _merge_clusters(cid, other["id"])
             return jsonify({"ok": True, "merged_into": other["id"], "cluster": merged})
     db().execute("UPDATE clusters SET name = ? WHERE id = ?", (name or None, cid))

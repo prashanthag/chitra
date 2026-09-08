@@ -285,8 +285,7 @@ private fun AccountSection(serverUrl: String) {
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") }, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
-            OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true, label = { Text("Password") },
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), modifier = Modifier.weight(1f))
+            PasswordField(value = pw, onChange = { pw = it }, modifier = Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             if (a.authRequired) {

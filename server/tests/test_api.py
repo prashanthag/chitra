@@ -248,11 +248,26 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual(self._names(self.admin, locked=1), ["one.jpg"])
         self.assertEqual(self.admin.get(f"/api/media/{one}/thumb").status_code, 200)
         self.assertNotIn("one.jpg", self._names(self.admin))       # still out of the normal feed
-        # The other account sees nothing, unlocked or not.
-        self.member.post("/api/locked/unlock", json={"password": "pass1"})
-        self.assertEqual(self._names(self.member, locked=1), [])
+        # Members have no Locked folder at all: cannot open, list, lock or unlock.
+        self.assertEqual(self.member.post("/api/locked/unlock", json={"password": "pass1"}).status_code, 403)
+        self.assertEqual(self.member.get("/api/media", query_string={"locked": 1}).status_code, 401)
         self.assertEqual(self.member.get(f"/api/media/{one}/thumb").status_code, 404)
-        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).get_json()["unlocked"], 0)
+        self.assertEqual(self.member.post("/api/media/lock", json={"ids": [two]}).status_code, 403)
+        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)
+        # The window slides with use and closes after UNLOCK_IDLE_SECONDS idle.
+        conn = chitra.sqlite3.connect(chitra.DB_PATH)
+        conn.execute("UPDATE sessions SET unlocked_until = ? WHERE user_id = 1", (time.time() + 5,))
+        conn.commit()
+        self._names(self.admin, locked=1)                           # activity on locked content...
+        left = conn.execute("SELECT unlocked_until FROM sessions WHERE user_id = 1").fetchone()[0] - time.time()
+        self.assertGreater(left, chitra.UNLOCK_IDLE_SECONDS - 5)    # ...extends the window
+        self._names(self.admin)                                      # ordinary browsing does not
+        conn.execute("UPDATE sessions SET unlocked_until = ? WHERE user_id = 1", (time.time() - 1,))
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.admin.get("/api/media", query_string={"locked": 1}).status_code, 401)
+        self.admin.post("/api/locked/unlock", json={"password": "secret1"})
+
         # Re-lock the session, then unlock the item for real.
         self.admin.post("/api/locked/lock")
         self.assertEqual(self.admin.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)
@@ -290,7 +305,6 @@ class AccountsAndLockTests(unittest.TestCase):
 
         # Deleting an account releases its locked items and ends its sessions.
         kid = [u for u in self.admin.get("/api/users").get_json() if u["name"] == "kid"][0]["id"]
-        self.member.post("/api/media/lock", json={"ids": [two]})
         self.assertEqual(self.admin.delete(f"/api/users/{kid}").status_code, 200)
         self.assertEqual(self.member.get("/api/media").status_code, 401)
         self.assertIn("two.jpg", self._names(self.admin, undated=1))
@@ -638,7 +652,13 @@ class ClusterMergeTests(unittest.TestCase):
 
     def test_naming_a_group_after_an_existing_person_merges_them(self):
         self._setup()
-        r = client.post("/api/clusters/12/name", json={"name": "ina"}).get_json()
+        # A duplicate name is not merged silently: the client is told the name
+        # exists (and how big that group is) so it can ask the user first.
+        r = client.post("/api/clusters/12/name", json={"name": "ina"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.get_json()["cluster"], {"id": 11, "name": "Ina", "count": 2})
+        self.assertEqual([c["id"] for c in client.get("/api/clusters").get_json()], [11, 12])
+        r = client.post("/api/clusters/12/name", json={"name": "ina", "merge": True}).get_json()
         self.assertEqual(r["merged_into"], 11)
         ids = [(c["id"], c["name"], c["count"]) for c in client.get("/api/clusters").get_json()]
         self.assertEqual(ids, [(11, "Ina", 3)])

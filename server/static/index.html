@@ -140,11 +140,13 @@
   #albumpop .newrow { display:flex; gap:6px; }
   #albumpop .newrow input { flex:1; min-width:0; }
   #cards .sect { grid-column:1/-1; font-size:13px; color:var(--dim); margin:4px 0 -6px; }
-  #loginpop { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; align-items:center; justify-content:center; z-index:300; }
-  #loginpop.on { display:flex; }
-  #loginpop .box { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; width:300px; display:flex; flex-direction:column; gap:10px; }
-  #loginpop h3 { margin:0; font-size:16px; } #loginpop .hint { margin:0; color:var(--dim); font-size:12px; }
-  #loginpop .row { display:flex; align-items:center; gap:10px; } #loginpop .err { color:#ff8a8a; font-size:12px; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.72); display:none; align-items:center; justify-content:center; z-index:300; }
+  .modal.on { display:flex; }
+  .modal .box { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; width:300px; display:flex; flex-direction:column; gap:10px; }
+  .modal h3 { margin:0; font-size:16px; } .modal .hint { margin:0; color:var(--dim); font-size:12px; }
+  .modal .row { display:flex; align-items:center; gap:10px; } .modal .err { color:#ff8a8a; font-size:12px; }
+  .pwrow { display:flex; align-items:center; gap:6px; } .pwrow input { flex:1; min-width:0; }
+  .pwrow .eye { background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:8px; padding:6px 9px; cursor:pointer; font-size:14px; }
   #accountpop { position:fixed; left:18px; bottom:18px; width:320px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; display:none; z-index:200; box-shadow:0 10px 30px rgba(0,0,0,.5); font-size:13px; }
   #accountpop.on { display:block; }
   #accountpop h4 { margin:0 0 10px; font-size:13px; display:flex; align-items:center; } #accountpop h4 .x { margin-left:auto; cursor:pointer; color:var(--dim); }
@@ -270,13 +272,21 @@
 <div id="datebadge"></div>
 <div class="toast" id="toast"></div>
 <div id="dropzone">Drop photos &amp; videos to upload</div>
-<div id="loginpop">
+<div id="loginpop" class="modal">
   <div class="box">
     <h3 id="loginTitle">Sign in</h3>
     <p class="hint" id="loginHint">This library needs an account.</p>
     <input id="loginName" placeholder="Name" autocomplete="username" onkeydown="if(event.key==='Enter')$('#loginPw').focus()" />
-    <input id="loginPw" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="pwrow"><input id="loginPw" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" /><button class="eye" type="button" title="Show password" onclick="toggleEye('loginPw', this)">👁</button></div>
     <div class="row"><button class="btn accent" onclick="doLogin()">Sign in</button><span class="err" id="loginErr"></span></div>
+  </div>
+</div>
+<div id="pwpop" class="modal">
+  <div class="box">
+    <h3 id="pwTitle">Password</h3>
+    <p class="hint" id="pwHint"></p>
+    <div class="pwrow"><input id="pwInput" type="password" autocomplete="current-password" /><button class="eye" type="button" title="Show password" onclick="toggleEye('pwInput', this)">👁</button></div>
+    <div class="row"><button class="btn accent" id="pwOk">OK</button><button class="btn" id="pwCancel">Cancel</button><span class="err" id="pwErr"></span></div>
   </div>
 </div>
 <div id="accountpop">
@@ -310,7 +320,51 @@ let AUTH = {auth_required:false, user:null, unlocked:false};
 async function refreshAuth(){
   try{ AUTH = await (await fetch('/api/auth/state')).json(); }catch(e){}
   $('#accountLabel').textContent = AUTH.user? AUTH.user.name : (AUTH.auth_required? 'Sign in' : 'Account');
-  document.querySelector('[data-view="locked"]').style.display = AUTH.user? '' : 'none';
+  // The Locked folder is an admin feature: members never see it.
+  document.querySelector('[data-view="locked"]').style.display = isAdmin()? '' : 'none';
+}
+function isAdmin(){ return !!(AUTH.user && AUTH.user.role==='admin'); }
+// While the Locked folder or a locked album is open, a minute without any
+// activity closes it again (server side too) and asks for the password next time.
+const idleLock = {t:null, reset:null};
+const IDLE_EVENTS = ['mousemove','keydown','click','scroll','touchstart','wheel'];
+function armIdleLock(){
+  disarmIdleLock();
+  idleLock.reset = ()=>{ clearTimeout(idleLock.t); idleLock.t = setTimeout(idleLockFire, 60000); };
+  IDLE_EVENTS.forEach(ev=> document.addEventListener(ev, idleLock.reset, {passive:true}));
+  idleLock.reset();
+}
+function disarmIdleLock(){
+  if(idleLock.reset){ IDLE_EVENTS.forEach(ev=> document.removeEventListener(ev, idleLock.reset)); idleLock.reset=null; }
+  clearTimeout(idleLock.t);
+}
+async function idleLockFire(){
+  disarmIdleLock();
+  try{ await fetch('/api/locked/lock', {method:'POST'}); }catch(e){}
+  AUTH.unlocked = false;
+  if($('#viewer').classList.contains('on')) closeViewer();
+  toast('Locked folder closed after a minute idle');
+  switchView(state.view==='ualbum'? 'albums' : 'photos');
+}
+// Passwords are masked by default; the eye reveals them on request.
+function toggleEye(id, btn){ const i=$('#'+id); const show = i.type==='password'; i.type = show? 'text':'password'; btn.textContent = show? '🙈':'👁'; btn.title = show? 'Hide password':'Show password'; }
+// Masked password dialog. `verify(pw)` returns true to close, false to show
+// "Wrong password" and keep the box open; resolves the password or null.
+function askPassword({title, hint, verify, okLabel}){
+  return new Promise(resolve=>{
+    const pop=$('#pwpop'), inp=$('#pwInput'), err=$('#pwErr');
+    $('#pwTitle').textContent = title||'Password'; $('#pwHint').textContent = hint||''; $('#pwOk').textContent = okLabel||'OK';
+    inp.value=''; inp.type='password'; err.textContent=''; pop.classList.add('on'); setTimeout(()=>inp.focus(), 30);
+    const done = v => { pop.classList.remove('on'); inp.onkeydown=null; $('#pwOk').onclick=null; $('#pwCancel').onclick=null; resolve(v); };
+    const ok = async ()=>{
+      const pw = inp.value; if(!pw) return;
+      if(verify){ $('#pwOk').disabled=true; const good = await verify(pw); $('#pwOk').disabled=false;
+        if(!good){ err.textContent='Wrong password'; inp.select(); return; } }
+      done(pw);
+    };
+    $('#pwOk').onclick = ok; $('#pwCancel').onclick = ()=>done(null);
+    inp.onkeydown = e=>{ if(e.key==='Enter') ok(); if(e.key==='Escape') done(null); };
+  });
 }
 function showLogin(){
   const pop = $('#loginpop'); if(pop.classList.contains('on')) return;
@@ -324,30 +378,31 @@ async function doLogin(){
   await refreshAuth(); reloadView();
 }
 async function logout(){ await fetch('/api/logout', {method:'POST'}); location.reload(); }
-// The Locked folder asks for the account password again (like device auth).
+// The Locked folder asks for the account password again (like device auth),
+// every time it or a locked album is opened.
 async function unlockPrompt(){
-  const password = prompt('Locked folder — enter your password:'); if(password===null) return false;
-  const r = await fetch('/api/locked/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password})});
-  if(!r.ok){ toast('Wrong password'); return false; }
+  const pw = await askPassword({title:'Locked folder', hint:'Enter your password to open it.', okLabel:'Unlock',
+    verify: async password => (await fetch('/api/locked/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({password})})).ok});
+  if(pw===null) return false;
   AUTH.unlocked = true; return true;
 }
 async function lockSel(lock){
   const ids=[...state.sel]; if(!ids.length) return;
-  if(!AUTH.user){ showLogin(); return; }
+  if(!isAdmin()){ toast('Locking is for admins'); return; }
   const r = await getJSON(lock? '/api/media/lock' : '/api/media/unlock', idsPost(ids));
   toast(lock? `Locked ${r.locked} (only you can see them, under Locked)` : `Unlocked ${r.unlocked}`);
   state.sel.clear(); updateSelBar(); reloadView();
 }
 async function lockCurrent(){
   const m = curItem(); if(!m) return;
-  if(!AUTH.user){ showLogin(); return; }
+  if(!isAdmin()){ toast('Locking is for admins'); return; }
   const lock = state.view!=='locked';
   const r = await getJSON(lock? '/api/media/lock' : '/api/media/unlock', idsPost([m.id]));
   toast(lock? 'Moved to your Locked folder' : 'Unlocked');
   closeViewer(); reloadView();
 }
 async function lockAlbum(id, lock){
-  if(!AUTH.user){ showLogin(); return; }
+  if(!isAdmin()){ toast('Locking is for admins'); return; }
   if(lock && !confirm('Lock this album? It and its photos disappear from every view and every other account until you unlock it.')) return;
   const r = await api(`/api/user_albums/${id}/${lock? 'lock':'unlock'}`, {method:'POST'});
   if(r.ok){ toast(lock? 'Album locked' : 'Album unlocked'); lock? switchView('albums') : loadUserAlbum(id); }
@@ -357,7 +412,7 @@ async function openAccount(){
   const pop = $('#accountpop'); const body = $('#accountBody');
   if(!AUTH.auth_required){
     body.innerHTML = `<div class="muted">No accounts yet: everyone on the network is an admin. Create the first account to require sign-in (it becomes the admin).</div>
-      <div class="newrow"><input id="nuName" placeholder="Name"/><input id="nuPw" type="password" placeholder="Password"/><button class="btn accent" onclick="createUser(true)">Create admin</button></div>`;
+      <div class="newrow"><input id="nuName" placeholder="Name"/><span class="pwrow" style="flex:1"><input id="nuPw" type="password" placeholder="Password"/><button class="eye" type="button" onclick="toggleEye('nuPw', this)">👁</button></span><button class="btn accent" onclick="createUser(true)">Create admin</button></div>`;
   }else if(!AUTH.user){
     body.innerHTML = `<button class="btn accent" onclick="showLogin()">Sign in</button>`;
   }else{
@@ -365,7 +420,7 @@ async function openAccount(){
     body.innerHTML = `<div>Signed in as <b>${esc(AUTH.user.name)}</b> <span class="muted">(${AUTH.user.role})</span> · <a href="#" onclick="logout();return false">sign out</a> · <a href="#" onclick="changePassword();return false">change password</a></div>`
       + (AUTH.user.role==='admin'? `<div style="margin-top:10px;font-weight:600">Users</div>` + users.map(u=>
           `<div class="urow">${esc(u.name)} <span class="role">${u.role}</span>${u.id!==AUTH.user.id? `<span class="del" title="Delete" onclick="deleteUser(${u.id},'${esc(u.name)}')">✕</span>`:''}</div>`).join('')
-        + `<div class="newrow"><input id="nuName" placeholder="Name"/><input id="nuPw" type="password" placeholder="Password"/>
+        + `<div class="newrow"><input id="nuName" placeholder="Name"/><span class="pwrow" style="flex:1"><input id="nuPw" type="password" placeholder="Password"/><button class="eye" type="button" onclick="toggleEye('nuPw', this)">👁</button></span>
            <select id="nuRole"><option value="member">member</option><option value="admin">admin</option></select>
            <button class="btn accent" onclick="createUser(false)">Add</button></div>` : '');
   }
@@ -384,8 +439,8 @@ async function deleteUser(id, name){
   await fetch(`/api/users/${id}`, {method:'DELETE'}); openAccount();
 }
 async function changePassword(){
-  const old = prompt('Current password:'); if(old===null) return;
-  const nw = prompt('New password (4+ characters):'); if(nw===null) return;
+  const old = await askPassword({title:'Change password', hint:'Current password', okLabel:'Next'}); if(old===null) return;
+  const nw = await askPassword({title:'Change password', hint:'New password (4+ characters)', okLabel:'Change'}); if(nw===null) return;
   const r = await fetch('/api/users/me/password', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old, new: nw})});
   toast(r.ok? 'Password changed' : 'Wrong current password');
 }
@@ -416,12 +471,14 @@ function switchView(view, params, fromPop){
   state.sel.clear(); updateSelBar();
   setActive(view==='ualbum'? 'albums' : view);
   closeAlbumPicker();
+  disarmIdleLock();
   $('#searchbar').classList.toggle('on', view==='search');
   $('#grid').innerHTML=''; $('#cards').innerHTML=''; $('#cards').style.display='none'; $('#grid').style.display='grid';
   $('#crumb').style.display='none';
   $('#status').textContent='';
-  if(view==='locked' && !AUTH.unlocked){
-    unlockPrompt().then(ok=>{ if(ok) loadGrid(true); else switchView('photos'); });
+  if(view==='locked'){
+    // Password every time the Locked folder is opened, unlocked session or not.
+    unlockPrompt().then(ok=>{ if(ok){ loadGrid(true); armIdleLock(); } else switchView('photos'); });
     return;
   }
   if(view==='people'){ loadPeople(); return; }
@@ -545,7 +602,7 @@ function updateSelBar(){
   $('#selRemove').style.display = state.view==='ualbum'? '':'none';
   const locked = state.view==='locked';
   $('#selMove').style.display = (inTrash || locked)? 'none':'';
-  $('#selLock').style.display = (inTrash || locked || !AUTH.user)? 'none':'';
+  $('#selLock').style.display = (inTrash || locked || !isAdmin())? 'none':'';
   $('#selUnlock').style.display = locked? '':'none';
   $('#selTrash').style.display = inTrash? 'none':'';
   $('#selRestore').style.display = inTrash? '':'none';
@@ -639,13 +696,21 @@ async function openCluster(cid, name){
   showCollection(name, items);
 }
 async function renameCluster(cid, current){
-  const name = prompt('Name this person (an existing name merges the two groups; blank just views the photos):', current || '');
+  const name = prompt('Name this person (blank just views the photos):', current || '');
   if(name === null){ return; }               // cancelled - do nothing at all
   const clean = name.trim();
   if(clean && clean !== current){
-    const r = await getJSON(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:clean})});
+    const post = body => api(`/api/clusters/${cid}/name`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    let res = await post({name:clean});
+    if(res.status === 409){
+      // Another group already has this name: ask before merging the two.
+      const other = (await res.json()).cluster;
+      if(!confirm(`“${other.name}” already exists (${other.count} faces).\nMerge this group into it?`)) return;
+      res = await post({name:clean, merge:true});
+    }
+    if(!res.ok){ toast('Could not save name'); return; }
+    const r = await res.json();
     if(r.merged_into){
-      // Same name as another group: the server merged this one into it.
       toast(`Merged into “${clean}” (${r.cluster.count} faces)`);
       cid = r.merged_into;
     }else toast('Saved name');
@@ -726,12 +791,13 @@ async function loadUserAlbum(id){
     <span class="acts">
       <button class="btn" onclick="renameAlbum(${a.id}, '${esc(a.name).replace(/'/g,'&#39;')}')">Rename</button>
       ${a.locked? '' : `<button class="btn" onclick="shareAlbum(${a.id})">${a.share_token? 'Share link' : 'Share'}</button>`}
-      ${AUTH.user? `<button class="btn" onclick="lockAlbum(${a.id}, ${a.locked? 'false':'true'})">${a.locked? '🔓 Unlock album' : '🔒 Lock album'}</button>` : ''}
+      ${isAdmin()? `<button class="btn" onclick="lockAlbum(${a.id}, ${a.locked? 'false':'true'})">${a.locked? '🔓 Unlock album' : '🔒 Lock album'}</button>` : ''}
       <button class="btn danger" onclick="deleteAlbum(${a.id})">Delete album</button>
     </span>`;
   $('#crumbBack').addEventListener('click', ()=> switchView('albums'));
   state.items.push(...items); appendTiles(items);
   $('#status').textContent = items.length? '' : 'Empty album — select photos anywhere and use “＋ Album”.';
+  if(a.locked) armIdleLock();
 }
 async function renameAlbum(id, current){
   const name = prompt('Album name', current); if(name===null) return;
@@ -922,7 +988,7 @@ function renderViewer(){
     stage.innerHTML = `<img src="${previewUrl(m)}"/>`;
   }
   $('#vFull').style.display = m.kind==='video'? 'none':'';
-  $('#vLock').style.display = AUTH.user? '' : 'none';
+  $('#vLock').style.display = isAdmin()? '' : 'none';
   $('#vLock').title = state.view==='locked'? 'Unlock (back to the library)' : 'Move to Locked folder';
   $('#vLock').textContent = state.view==='locked'? '🔓' : '🔒';
   $('#vFav').classList.toggle('on', !!m.favorite);

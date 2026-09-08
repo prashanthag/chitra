@@ -206,6 +206,7 @@ fun UserAlbumScreen(
     onDeleted: () -> Unit,
     onItemClick: (List<MediaItem>, Int) -> Unit,
     reloadKey: Int = 0,
+    canLock: Boolean = false,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     val context = LocalContext.current
@@ -259,7 +260,7 @@ fun UserAlbumScreen(
                             }
                         }
                     }) { Icon(Icons.Default.Share, contentDescription = "Share link") }
-                    IconButton(onClick = {
+                    if (canLock) IconButton(onClick = {
                         scope.launch {
                             try {
                                 if (album.locked) api.unlockUserAlbum(album.id) else api.lockUserAlbum(album.id)

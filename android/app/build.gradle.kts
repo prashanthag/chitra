@@ -13,8 +13,8 @@ android {
         applicationId = "com.buildapp.photos"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.12"
+        versionCode = 14
+        versionName = "0.14"
     }
 
     buildTypes {

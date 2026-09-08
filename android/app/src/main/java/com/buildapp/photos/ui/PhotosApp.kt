@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.verticalScroll
@@ -82,6 +84,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -221,7 +224,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
                     onAddToAlbum = { albumPickFor = it },
-                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
                     onMove = { moveFor = it },
                 )
             }
@@ -238,6 +241,10 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             return
         }
         is Route.UserAlbumMedia -> {
+            IdleRelock(enabled = r.album.locked && staticViewer == null, onIdle = {
+                vm.relock(); route = Route.Albums
+                android.widget.Toast.makeText(context, "Locked album closed after a minute idle", android.widget.Toast.LENGTH_SHORT).show()
+            }) {
             UserAlbumScreen(
                 serverUrl = state.serverUrl,
                 album = r.album,
@@ -245,7 +252,9 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 onDeleted = { route = Route.Albums },
                 onItemClick = { l, i -> staticViewer = l to i },
                 reloadKey = albumsChanged,
+                canLock = vm.isAdmin,
             )
+            }
             staticViewer?.let { (list, idx) ->
                 ViewerDialog(
                     items = list,
@@ -257,7 +266,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
                     onAddToAlbum = { albumPickFor = it },
-                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
                     onMove = { moveFor = it },
                 )
             }
@@ -269,7 +278,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 album = r.album,
                 onBack = { route = Route.Albums },
                 onItemClick = { l, i -> staticViewer = l to i },
-                signedIn = state.user != null,
+                signedIn = vm.isAdmin,
             )
             staticViewer?.let { (list, idx) ->
                 ViewerDialog(
@@ -282,7 +291,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
                     onAddToAlbum = { albumPickFor = it },
-                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
+                    onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
                     onMove = { moveFor = it },
                 )
             }
@@ -327,6 +336,10 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
         }
         is Route.Collection -> {
             LaunchedEffect(r.filter) { vm.setFilter(r.filter) }
+            IdleRelock(enabled = r.filter == Filter.LOCKED && liveViewerIndex == null, onIdle = {
+                vm.relock(); vm.setFilter(Filter.ALL); route = Route.Gallery; tab = Tab.COLLECTIONS
+                android.widget.Toast.makeText(context, "Locked folder closed after a minute idle", android.widget.Toast.LENGTH_SHORT).show()
+            }) {
             Scaffold(
                 topBar = {
                     TopAppBar(
@@ -345,6 +358,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                         onLoadMore = { vm.loadNext() }, onRetry = { vm.refresh() }, onSettings = { route = Route.Settings })
                 }
             }
+            }
             liveViewerIndex?.let { idx ->
                 ViewerDialog(
                     items = state.items, initialIndex = idx, serverUrl = state.serverUrl,
@@ -353,7 +367,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onArchive = { vm.archive(it) }, onRestore = { vm.restore(it) }, onRotate = { vm.rotate(it) },
                     onEdit = { route = Route.Editor(it); liveViewerIndex = null },
                     onAddToAlbum = { albumPickFor = it },
-                    onLock = if (state.user != null) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
+                    onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
                     lockedView = r.filter == Filter.LOCKED,
                     onMove = if (r.filter != Filter.LOCKED) { m -> moveFor = m } else null,
                 )
@@ -473,7 +487,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     onCluster = { route = Route.ClusterMedia(it) },
                     onMap = { route = Route.Map },
                     onCollection = { route = Route.Collection(it) },
-                    signedIn = state.user != null,
+                    signedIn = vm.isAdmin,
                     onLocked = { unlockThen = { route = Route.Collection(Filter.LOCKED) } },
                 )
             }
@@ -493,7 +507,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             onRotate = { vm.rotate(it) },
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
             onAddToAlbum = { albumPickFor = it },
-            onLock = if (state.user != null) { m -> vm.setLocked(m, locked = true) } else null,
+            onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true) } else null,
             onMove = { moveFor = it },
         )
     }
@@ -509,6 +523,42 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
 
 }
 
+/**
+ * While locked content is on screen, a minute without a touch closes it:
+ * the session is re-locked on the server and the screen is left. A viewer
+ * dialog on top counts as activity (its touches never reach this layer), so
+ * the countdown only runs while no viewer is open.
+ */
+@Composable
+private fun IdleRelock(enabled: Boolean, onIdle: () -> Unit, content: @Composable () -> Unit) {
+    var last by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(enabled, last) {
+        if (enabled) { kotlinx.coroutines.delay(60_000); onIdle() }
+    }
+    Box(Modifier.fillMaxSize().pointerInput(enabled) {
+        if (enabled) awaitPointerEventScope {
+            while (true) { awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial); last = System.currentTimeMillis() }
+        }
+    }) { content() }
+}
+
+/** Password entry: masked by default, an eye reveals it. */
+@Composable
+internal fun PasswordField(value: String, onChange: (String) -> Unit, label: String = "Password", modifier: Modifier = Modifier) {
+    var show by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value, onValueChange = onChange, singleLine = true, label = { Text(label) }, modifier = modifier,
+        visualTransformation = if (show) androidx.compose.ui.text.input.VisualTransformation.None
+            else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { show = !show }) {
+                Icon(if (show) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = if (show) "Hide password" else "Show password")
+            }
+        },
+    )
+}
+
 @Composable
 private fun LoginDialog(vm: GalleryViewModel, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
@@ -522,9 +572,7 @@ private fun LoginDialog(vm: GalleryViewModel, onDismiss: () -> Unit) {
                 Text("This library needs an account.", color = Color.Gray, fontSize = 13.sp)
                 OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") },
                     modifier = Modifier.padding(top = 8.dp))
-                OutlinedTextField(value = pw, onValueChange = { pw = it }, singleLine = true, label = { Text("Password") },
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    modifier = Modifier.padding(top = 8.dp))
+                PasswordField(value = pw, onChange = { pw = it }, modifier = Modifier.padding(top = 8.dp))
                 err?.let { Text(it, color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp)) }
             }
         },
@@ -543,9 +591,7 @@ private fun UnlockDialog(vm: GalleryViewModel, onDismiss: () -> Unit, onUnlocked
         text = {
             Column {
                 Text("Enter your password to open it.", color = Color.Gray, fontSize = 13.sp)
-                OutlinedTextField(value = pw, onValueChange = { pw = it; err = false }, singleLine = true, label = { Text("Password") },
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    modifier = Modifier.padding(top = 8.dp))
+                PasswordField(value = pw, onChange = { pw = it; err = false }, modifier = Modifier.padding(top = 8.dp))
                 if (err) Text("Wrong password", color = Color(0xFFEF5350), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
             }
         },
