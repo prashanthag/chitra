@@ -216,6 +216,17 @@ class AccountsAndLockTests(unittest.TestCase):
         # A signed-in member still cannot create anyone, whatever role they ask for.
         self.assertEqual(self.member.post("/api/users",
                          json={"name": "sneak", "password": "pass1", "role": "admin"}).status_code, 403)
+        # Members are viewers: nothing that changes the library is allowed,
+        # but backing up a phone and changing their own password still work.
+        self.assertFalse(self.member.get("/api/auth/state").get_json()["can_edit"])
+        self.assertTrue(self.admin.get("/api/auth/state").get_json()["can_edit"])
+        for path in (f"/api/media/{two}/favorite", f"/api/media/{two}/trash", "/api/media/batch_trash",
+                     "/api/user_albums", "/api/persons", "/api/rescan", f"/api/media/{two}/share"):
+            self.assertEqual(self.member.post(path, json={"ids": [two], "name": "x"}).status_code, 403, path)
+        self.assertEqual(self.member.delete(f"/api/media/{two}/share").status_code, 403)
+        self.assertNotEqual(self.member.post("/api/upload/check", json={"items": []}).status_code, 403)
+        self.assertEqual(self.member.post("/api/users/me/password",
+                         json={"old": "pass1", "new": "pass1"}).status_code, 200)
         # prash, kid, nofield, typo, junk, nulled, second
         everyone = self.admin.get("/api/users").get_json()
         self.assertEqual(len(everyone), 7)
@@ -253,7 +264,7 @@ class AccountsAndLockTests(unittest.TestCase):
         self.assertEqual(self.member.get("/api/media", query_string={"locked": 1}).status_code, 401)
         self.assertEqual(self.member.get(f"/api/media/{one}/thumb").status_code, 404)
         self.assertEqual(self.member.post("/api/media/lock", json={"ids": [two]}).status_code, 403)
-        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).status_code, 401)
+        self.assertEqual(self.member.post("/api/media/unlock", json={"ids": [one]}).status_code, 403)
         # The window slides with use and closes after UNLOCK_IDLE_SECONDS idle.
         conn = chitra.sqlite3.connect(chitra.DB_PATH)
         conn.execute("UPDATE sessions SET unlocked_until = ? WHERE user_id = 1", (time.time() + 5,))

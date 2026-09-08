@@ -178,6 +178,11 @@
           background:rgba(91,140,255,.12); border:3px dashed var(--accent); margin:10px; border-radius:16px;
           font-size:22px; font-weight:600; color:#cdd9ff; pointer-events:none; }
   #dropzone.on { display:flex; }
+/* Members are viewers: editing controls disappear. */
+body.viewer #selAlbum, body.viewer #selRemove, body.viewer #selMove, body.viewer #selLock, body.viewer #selUnlock,
+body.viewer #selRestore, body.viewer #selTrash, body.viewer #selDelete,
+body.viewer #vShare, body.viewer #vAlbum, body.viewer #vLock, body.viewer #vMove, body.viewer #vFav, body.viewer #vTag, body.viewer #vTrash,
+body.viewer #newAlbumCard, body.viewer .rn, body.viewer .editonly { display:none !important; }
 </style>
 </head>
 <body>
@@ -188,7 +193,7 @@
     <span class="pill" id="scan">–</span>
     <span class="grow"></span>
     <button class="btn accent" onclick="document.getElementById('fileInput').click()">↑ Upload</button>
-    <button class="btn" onclick="rescan()">Rescan</button>
+    <button class="btn editonly" onclick="rescan()">Rescan</button>
     <input id="fileInput" type="file" accept="image/*,video/*" multiple style="display:none" onchange="uploadFiles(this.files)" />
   </header>
 
@@ -309,6 +314,7 @@ const $ = s => document.querySelector(s);
 // (a cookie the server sets on login). A 401 anywhere opens the sign-in box.
 const api = async (p, o) => {
   const r = await fetch(p, o);
+  if(r.status===403 && !canEdit()) toast('View only: ask an admin to make changes');
   if(r.status===401 && !p.startsWith('/api/login')){
     // Signed in but refused: the Locked folder wants the password again.
     if(AUTH.user || p.includes('locked=1') || p.startsWith('/api/media/unlock')) { await unlockPrompt(); }
@@ -322,8 +328,12 @@ async function refreshAuth(){
   $('#accountLabel').textContent = AUTH.user? AUTH.user.name : (AUTH.auth_required? 'Sign in' : 'Account');
   // The Locked folder is an admin feature: members never see it.
   document.querySelector('[data-view="locked"]').style.display = isAdmin()? '' : 'none';
+  document.body.classList.toggle('viewer', !canEdit());
 }
 function isAdmin(){ return !!(AUTH.user && AUTH.user.role==='admin'); }
+// Members are viewers: the server refuses every change from them, so the
+// editing controls are hidden (body.viewer) rather than left to fail.
+function canEdit(){ return AUTH.can_edit !== false; }
 // While the Locked folder or a locked album is open, a minute without any
 // activity closes it again (server side too) and asks for the password next time.
 const idleLock = {t:null, reset:null};
@@ -691,7 +701,7 @@ async function loadPeople(){
 async function openCluster(cid, name){
   // An already-named group opens straight to its photos; only an unnamed one
   // asks for a name, and even then blank just views it.
-  if(!name){ return renameCluster(cid, ''); }
+  if(!name && canEdit()){ return renameCluster(cid, ''); }
   const items = await getJSON(`/api/clusters/${cid}/media`);
   showCollection(name, items);
 }
@@ -789,10 +799,10 @@ async function loadUserAlbum(id){
   $('#crumb').style.display='flex';
   $('#crumb').innerHTML = `<span style="cursor:pointer" id="crumbBack">‹ Albums</span> · <b>${esc(a.name)}</b> · ${a.count} items
     <span class="acts">
-      <button class="btn" onclick="renameAlbum(${a.id}, '${esc(a.name).replace(/'/g,'&#39;')}')">Rename</button>
-      ${a.locked? '' : `<button class="btn" onclick="shareAlbum(${a.id})">${a.share_token? 'Share link' : 'Share'}</button>`}
+      ${canEdit()? `<button class="btn" onclick="renameAlbum(${a.id}, '${esc(a.name).replace(/'/g,'&#39;')}')">Rename</button>` : ''}
+      ${a.locked || !canEdit()? '' : `<button class="btn" onclick="shareAlbum(${a.id})">${a.share_token? 'Share link' : 'Share'}</button>`}
       ${isAdmin()? `<button class="btn" onclick="lockAlbum(${a.id}, ${a.locked? 'false':'true'})">${a.locked? '🔓 Unlock album' : '🔒 Lock album'}</button>` : ''}
-      <button class="btn danger" onclick="deleteAlbum(${a.id})">Delete album</button>
+      ${canEdit()? `<button class="btn danger" onclick="deleteAlbum(${a.id})">Delete album</button>` : ''}
     </span>`;
   $('#crumbBack').addEventListener('click', ()=> switchView('albums'));
   state.items.push(...items); appendTiles(items);

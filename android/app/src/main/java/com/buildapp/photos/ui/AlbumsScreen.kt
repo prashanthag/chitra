@@ -70,6 +70,7 @@ fun AlbumsScreen(
     onBack: () -> Unit,
     onAlbumSelected: (Album) -> Unit,
     onUserAlbumSelected: (UserAlbum) -> Unit = {},
+    canEdit: Boolean = true,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     var albums by remember { mutableStateOf<List<Album>?>(null) }
@@ -121,7 +122,7 @@ fun AlbumsScreen(
                     // Manual albums first (any photo, any folder), then the
                     // read-only folder albums derived from the library root.
                     item(span = { GridItemSpan(maxLineSpan) }) { SectionLabel("My albums") }
-                    item(key = "new") {
+                    if (canEdit) item(key = "new") {
                         Column(Modifier.clickable { newAlbum = true }) {
                             Box(
                                 Modifier.aspectRatio(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -207,6 +208,7 @@ fun UserAlbumScreen(
     onItemClick: (List<MediaItem>, Int) -> Unit,
     reloadKey: Int = 0,
     canLock: Boolean = false,
+    canEdit: Boolean = true,
 ) {
     val api = remember(serverUrl) { PhotoApi.create(serverUrl) }
     val context = LocalContext.current
@@ -244,7 +246,7 @@ fun UserAlbumScreen(
                 title = { Text("${album.name} · ${items?.size ?: album.count}") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null) } },
                 actions = {
-                    IconButton(onClick = {
+                    if (canEdit) IconButton(onClick = {
                         // Mint the public link and hand it to the share sheet.
                         scope.launch {
                             try {
@@ -275,7 +277,7 @@ fun UserAlbumScreen(
                             }
                         }
                     }) { Icon(if (album.locked) Icons.Default.LockOpen else Icons.Default.Lock, contentDescription = if (album.locked) "Unlock album" else "Lock album") }
-                    IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, contentDescription = "Delete album") }
+                    if (canEdit) IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, contentDescription = "Delete album") }
                 },
             )
         },

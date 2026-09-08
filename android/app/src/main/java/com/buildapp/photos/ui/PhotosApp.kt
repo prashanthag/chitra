@@ -219,19 +219,20 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     initialIndex = idx,
                     serverUrl = state.serverUrl,
                     onDismiss = { staticViewer = null },
-                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
-                    onAddToAlbum = { albumPickFor = it },
+                    onAddToAlbum = if (vm.canEdit) { m -> albumPickFor = m } else null,
                     onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
-                    onMove = { moveFor = it },
+                    onMove = if (vm.canEdit) { m -> moveFor = m } else null,
                 )
             }
             return
         }
         is Route.Albums -> {
             AlbumsScreen(
+                canEdit = vm.canEdit,
                 serverUrl = state.serverUrl,
                 onBack = { route = Route.Gallery },
                 onAlbumSelected = { route = Route.AlbumMedia(it) },
@@ -246,6 +247,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 android.widget.Toast.makeText(context, "Locked album closed after a minute idle", android.widget.Toast.LENGTH_SHORT).show()
             }) {
             UserAlbumScreen(
+                canEdit = vm.canEdit,
                 serverUrl = state.serverUrl,
                 album = r.album,
                 onBack = { route = Route.Albums },
@@ -261,13 +263,13 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     initialIndex = idx,
                     serverUrl = state.serverUrl,
                     onDismiss = { staticViewer = null },
-                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
-                    onAddToAlbum = { albumPickFor = it },
+                    onAddToAlbum = if (vm.canEdit) { m -> albumPickFor = m } else null,
                     onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
-                    onMove = { moveFor = it },
+                    onMove = if (vm.canEdit) { m -> moveFor = m } else null,
                 )
             }
             return
@@ -286,13 +288,13 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     initialIndex = idx,
                     serverUrl = state.serverUrl,
                     onDismiss = { staticViewer = null },
-                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
                     onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) },
                     onRestore = { vm.restore(it) },
-                    onAddToAlbum = { albumPickFor = it },
+                    onAddToAlbum = if (vm.canEdit) { m -> albumPickFor = m } else null,
                     onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true); staticViewer = null } else null,
-                    onMove = { moveFor = it },
+                    onMove = if (vm.canEdit) { m -> moveFor = m } else null,
                 )
             }
             return
@@ -312,7 +314,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                     initialIndex = idx,
                     serverUrl = state.serverUrl,
                     onDismiss = { liveViewerIndex = null },
-                    onToggleFavorite = { vm.toggleFavorite(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
                 )
             }
             return
@@ -363,13 +365,13 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
                 ViewerDialog(
                     items = state.items, initialIndex = idx, serverUrl = state.serverUrl,
                     onDismiss = { liveViewerIndex = null },
-                    onToggleFavorite = { vm.toggleFavorite(it) }, onTrash = { vm.trash(it) },
+                    onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit, onTrash = { vm.trash(it) },
                     onArchive = { vm.archive(it) }, onRestore = { vm.restore(it) }, onRotate = { vm.rotate(it) },
                     onEdit = { route = Route.Editor(it); liveViewerIndex = null },
-                    onAddToAlbum = { albumPickFor = it },
+                    onAddToAlbum = if (vm.canEdit) { m -> albumPickFor = m } else null,
                     onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = r.filter != Filter.LOCKED) } else null,
                     lockedView = r.filter == Filter.LOCKED,
-                    onMove = if (r.filter != Filter.LOCKED) { m -> moveFor = m } else null,
+                    onMove = if (vm.canEdit && r.filter != Filter.LOCKED) { m -> moveFor = m } else null,
                 )
             }
             return
@@ -500,15 +502,15 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             initialIndex = idx,
             serverUrl = state.serverUrl,
             onDismiss = { liveViewerIndex = null },
-            onToggleFavorite = { vm.toggleFavorite(it) },
+            onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
             onTrash = { vm.trash(it) },
             onArchive = { vm.archive(it) },
             onRestore = { vm.restore(it) },
             onRotate = { vm.rotate(it) },
             onEdit = { route = Route.Editor(it); liveViewerIndex = null },
-            onAddToAlbum = { albumPickFor = it },
+            onAddToAlbum = if (vm.canEdit) { m -> albumPickFor = m } else null,
             onLock = if (vm.isAdmin) { m -> vm.setLocked(m, locked = true) } else null,
-            onMove = { moveFor = it },
+            onMove = if (vm.canEdit) { m -> moveFor = m } else null,
         )
     }
     staticViewer?.let { (list, idx) ->
@@ -517,7 +519,7 @@ fun PhotosApp(vm: GalleryViewModel = viewModel()) {
             initialIndex = idx,
             serverUrl = state.serverUrl,
             onDismiss = { staticViewer = null },
-            onToggleFavorite = { vm.toggleFavorite(it) },
+            onToggleFavorite = { vm.toggleFavorite(it) }, readOnly = !vm.canEdit,
         )
     }
 

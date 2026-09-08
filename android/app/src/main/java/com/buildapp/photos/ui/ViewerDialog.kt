@@ -75,6 +75,8 @@ fun ViewerDialog(
     lockedView: Boolean = false,
     /** Move the item into another folder album (files move on disk). */
     onMove: ((MediaItem) -> Unit)? = null,
+    /** Members are viewers: no action that changes the library is offered. */
+    readOnly: Boolean = false,
 ) {
     if (items.isEmpty()) { onDismiss(); return }
     Dialog(
@@ -140,6 +142,7 @@ fun ViewerDialog(
                             contentDescription = if (lockedView) "Unlock" else "Move to Locked folder", tint = Color.White)
                     }
                 }
+                if (!readOnly) {
                 IconButton(onClick = {
                     // Download the actual file and hand it to the share sheet.
                     scope.launch {
@@ -205,6 +208,7 @@ fun ViewerDialog(
                     IconButton(onClick = { onTrash(item); onDismiss() }) {
                         Icon(Icons.Default.Delete, contentDescription = "Trash", tint = Color.White)
                     }
+                }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
