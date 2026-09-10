@@ -4,6 +4,7 @@ generates JPEG thumbnails on demand, streams originals + range-served video."""
 from __future__ import annotations
 
 import calendar
+import datetime
 import hashlib
 import struct
 import io
@@ -347,8 +348,69 @@ def quick_hash_file(path: Path) -> str | None:
         return None
 
 
-def extract_exif(path: Path, kind: str) -> dict:
-    """Returns {taken_at, lat, lng, make, model}, all optional."""
+_ISO_DT = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$")
+_XMP_DATE = re.compile(
+    rb"(?:exif:DateTimeOriginal|photoshop:DateCreated|xmp:CreateDate|exif:DateTimeDigitized)"
+    rb"""\s*(?:=\s*["']|>)\s*([0-9]{4}[-:][0-9]{2}[-:][0-9]{2}[T ][0-9:.]{8,12}(?:Z|[+-][0-9]{2}:?[0-9]{2})?)""")
+
+
+def parse_exif_datetime(value) -> float | None:
+    """Epoch seconds from the date strings found in photos: the EXIF form
+    "2014:10:10 21:15:25", the same with dashes, and ISO 8601 with an
+    optional zone ("2014-10-10T21:15:25-07:00", as Photoshop and XMP write
+    it). A zoned value is converted exactly; a naive one is local time, like
+    the camera clock it came from. The unset-clock "0000:00:00 00:00:00"
+    and anything else unparseable give None."""
+    if value is None:
+        return None
+    s = str(value).strip().strip("\x00")
+    if not s or s.startswith("0000"):
+        return None
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            return time.mktime(time.strptime(s[:19], fmt))
+        except ValueError:
+            pass
+    m = _ISO_DT.match(s)
+    if not m:
+        return None
+    y, mo, d, h, mi, sec, zone = m.groups()
+    try:
+        naive = datetime.datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec))
+    except ValueError:
+        return None
+    if not zone:
+        return time.mktime(naive.timetuple())
+    if zone == "Z":
+        offset = 0
+    else:
+        sign = 1 if zone[0] == "+" else -1
+        digits = zone[1:].replace(":", "")
+        offset = sign * (int(digits[:2]) * 3600 + int(digits[2:]) * 60)
+    return calendar.timegm(naive.timetuple()) - offset
+
+
+def _xmp_taken_at(path: Path) -> float | None:
+    """Files exported by editors often carry the capture date only in the
+    XMP packet (APP1), not in EXIF; recovered files especially."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(512 * 1024)
+    except OSError:
+        return None
+    if b"<x:xmpmeta" not in head and b"x:xmpmeta" not in head:
+        return None
+    for m in _XMP_DATE.finditer(head):
+        ts = parse_exif_datetime(m.group(1).decode("ascii", "replace"))
+        if ts:
+            return ts
+    return None
+
+
+def extract_exif(path: Path, kind: str, mtime_fallback: bool = True) -> dict:
+    """Returns {taken_at, lat, lng, make, model}, all optional. With
+    `mtime_fallback` off, `taken_at` is only ever a real capture date."""
     out: dict = {}
     if kind == "photo":
         try:
@@ -360,12 +422,11 @@ def extract_exif(path: Path, kind: str) -> dict:
                     sub = exif.get_ifd(34665)
                 except Exception:
                     sub = {}
-                dt = sub.get(36867) or exif.get(36867) or exif.get(306)
-                if dt:
-                    try:
-                        out["taken_at"] = time.mktime(time.strptime(dt, "%Y:%m:%d %H:%M:%S"))
-                    except Exception:
-                        pass
+                for dt in (sub.get(36867), sub.get(36868), exif.get(36867), exif.get(306)):
+                    ts = parse_exif_datetime(dt)
+                    if ts:
+                        out["taken_at"] = ts
+                        break
                 make = _clean_exif_str(exif.get(271))   # Make, e.g. "Apple", "Canon"
                 model = _clean_exif_str(exif.get(272))  # Model, e.g. "iPhone 14 Pro"
                 if make:
@@ -382,9 +443,13 @@ def extract_exif(path: Path, kind: str) -> dict:
                         out["lng"] = lng
         except Exception:
             pass
+        if "taken_at" not in out:
+            xmp = _xmp_taken_at(path)
+            if xmp:
+                out["taken_at"] = xmp
     elif kind == "video":
         out.update(_video_meta(path))
-    if "taken_at" not in out:
+    if "taken_at" not in out and mtime_fallback:
         try:
             out["taken_at"] = path.stat().st_mtime
         except OSError:

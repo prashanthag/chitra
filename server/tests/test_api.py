@@ -1509,3 +1509,39 @@ class AlbumCoverTests(unittest.TestCase):
         conn.close()
         detail = " | ".join(r[3] for r in plan)
         self.assertNotIn("TEMP B-TREE", detail, detail)
+
+
+class ExifDateParsingTests(unittest.TestCase):
+    def test_camera_and_editor_date_forms(self):
+        import calendar as _cal
+        p = chitra.parse_exif_datetime
+        self.assertEqual(p("2014:10:10 21:15:25"), time.mktime((2014, 10, 10, 21, 15, 25, 0, 0, -1)))
+        self.assertEqual(p("2014-10-10 21:15:25"), p("2014:10:10 21:15:25"))
+        # Photoshop / XMP: ISO 8601 with a zone is an exact instant.
+        self.assertEqual(p("2014-10-10T21:15:25-07:00"), _cal.timegm((2014, 10, 11, 4, 15, 25, 0, 0, 0)))
+        self.assertEqual(p("2014-10-10T21:15:25.123+05:30"), _cal.timegm((2014, 10, 10, 15, 45, 25, 0, 0, 0)))
+        self.assertEqual(p("2014-10-10T21:15:25Z"), _cal.timegm((2014, 10, 10, 21, 15, 25, 0, 0, 0)))
+        # A camera with its clock unset, garbage, and nothing at all.
+        for bad in ("0000:00:00 00:00:00", "", None, "yesterday", "2014:13:45 99:99:99"):
+            self.assertIsNone(p(bad), bad)
+
+    def test_xmp_only_date_and_no_mtime_fallback(self):
+        import io
+        from PIL import Image as _Image
+        src = _Image.new("RGB", (8, 8), "red")
+        buf = io.BytesIO()
+        src.save(buf, "JPEG")
+        jpeg = buf.getvalue()
+        xmp = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description '
+               b'photoshop:DateCreated="2014-10-10T21:15:25-07:00"/></rdf:RDF></x:xmpmeta>')
+        payload = b"http://ns.adobe.com/xap/1.0/\x00" + xmp
+        app1 = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+        with tempfile.TemporaryDirectory() as d:
+            plain = Path(d) / "plain.jpg"
+            plain.write_bytes(jpeg)
+            tagged = Path(d) / "tagged.jpg"
+            tagged.write_bytes(jpeg[:2] + app1 + jpeg[2:])
+            self.assertEqual(chitra.extract_exif(tagged, "photo")["taken_at"],
+                             chitra.parse_exif_datetime("2014-10-10T21:15:25-07:00"))
+            self.assertNotIn("taken_at", chitra.extract_exif(plain, "photo", mtime_fallback=False))
+            self.assertIn("taken_at", chitra.extract_exif(plain, "photo"))
